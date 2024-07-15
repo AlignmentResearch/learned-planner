@@ -1,0 +1,187 @@
+{% set sprite_sz = 96 %}
+{% set img_width = 10 * sprite_sz %}
+{% set img_height = 10 * sprite_sz %}
+
+{# we sort the wall positions so walls with larger Y values are drawn on top of walls with lower Y values. The walls are
+  97x97 pixels (even though sprites are 96x96), to avoid edge artifacts #}
+{% set sorted_wall_positions = wall_positions|sort %}
+
+<svg
+  width="{{ img_width }}"
+  height="{{ img_height }}"
+  viewBox="0 0 {{ img_width }} {{ img_height }}"
+  version="1.1"
+  xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+  xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+  xmlns:xlink="http://www.w3.org/1999/xlink"
+  xmlns="http://www.w3.org/2000/svg"
+  xmlns:svg="http://www.w3.org/2000/svg">
+<g id="layer-background" inkscape:groupmode="layer">
+  <rect
+    style="fill:#dddddd;fill-opacity:1;stroke:none"
+    id="bg-rect"
+    width="{{ img_width }}"
+    height="{{ img_height }}"
+    x="0"
+    y="0" />
+</g>
+<g id="layer-wall" inkscape:groupmode="layer">
+{% if sorted_wall_positions|length > 0 %}
+{% set wall_x, wall_y = sorted_wall_positions[0] %}
+    <g id="wall" transform="translate({{ wall_x * sprite_sz }},{{ wall_y * sprite_sz }})">
+      <path
+         id="brick-background"
+         d="M 0,0 H 97 V 97 H 0 Z"
+         style="fill:#666666;fill-opacity:1;fill-rule:nonzero;stroke:none" />
+      <path
+         id="brick-pattern"
+         d="m 0,0 v -5.33333333 -42.66666667 -5.33333333 h 5.33333333 42.66666667 v -42.66666667 h 5.33333333 v 42.66666667 H 97 v 5.33333333 h -42.66666667 -5.33333333 H 5.33333333 v 42.66666667 h 90.66666667 v 5.33333333 z"
+         style="fill:#a19f8f;fill-opacity:1;fill-rule:nonzero;stroke:none"
+         transform="scale(1,-1)" />
+    </g>
+{% for x, y in sorted_wall_positions[1:] %}
+<use xlink:href="#wall" transform="translate({{ (x - wall_x) * sprite_sz }}, {{ (y - wall_y) * sprite_sz }})" />
+{% endfor %}
+{% endif %}
+</g>
+<g id="layer-box" inkscape:groupmode="layer">
+{% if box_positions|length > 0 %}
+{% set box_x, box_y = box_positions[0] %}
+    <g id="box"  transform="translate({{ box_x * sprite_sz }},{{ box_y * sprite_sz }})">
+      <rect
+         style="fill:#ffff99;fill-opacity:1;stroke:none"
+         id="rect1"
+         width="90"
+         height="90"
+         x="3"
+         y="3"
+         ry="15" />
+      <path
+         id="path6"
+         d="M 79.304611,14.039889 48.539195,44.805306 17.361222,13.626028 c 2.064083,-1.370834 4.5355,-2.176362 7.185778,-2.176362 h 47 c 2.903555,0 5.582555,0.971333 7.757611,2.590223 M 17.972222,82.756501 48.539195,52.190833 78.734083,82.384417 c -2.065388,1.370834 -4.536805,2.176361 -7.187083,2.176361 h -47 c -2.395695,0 -4.638639,-0.665834 -6.574778,-1.804277 M 84.555555,24.505222 v 47 c 0,2.650278 -0.805527,5.121695 -2.17636,7.187084 L 52.184305,48.497416 82.751278,17.930444 c 1.138444,1.936139 1.804277,4.179084 1.804277,6.574778 M 13.620805,17.319444 44.800083,48.497416 14.034667,79.262834 c -1.618889,-2.175056 -2.590222,-4.854057 -2.590222,-7.757612 v -47 c 0,-2.650278 0.805527,-5.121694 2.17636,-7.185778 M 81.944445,1 H 14.055555 C 6.875,1 1,6.875 1,14.055556 V 81.944444 C 1,89.125 6.875,95 14.055555,95 h 67.88889 C 89.125,95 95,89.125 95,81.944444 V 14.055556 C 95,6.875 89.125,1 81.944445,1"
+         style="fill:#663333;fill-opacity:1;fill-rule:nonzero;stroke:none;stroke-width:1.30555"
+         sodipodi:nodetypes="cccssccccssccscccccccssccsssssssc"
+         transform="matrix(0.98, 0, 0, 0.98, 1.5, 1.5)" />
+    </g>
+{% for x, y in box_positions[1:] %}
+<use xlink:href="#box" transform="translate({{ (x - box_x) * sprite_sz }}, {{ (y - box_y) * sprite_sz }})" />
+{% endfor %}
+{% endif %}
+</g>
+
+<g id="layer-player" inkscape:groupmode="layer">
+    <g id="robot" transform="translate({{ player_position[0] * sprite_sz }},{{ player_position[1] * sprite_sz }})">
+    <g
+       id="g381"
+       transform="translate(-933.24913,1109.0135)">
+      <path
+         id="path152"
+         d="m 0,0 h -6.594 c -0.148,0 -0.264,-0.437 -0.264,-0.951 v -12.32 c 0,-0.515 0.116,-0.952 0.264,-0.952 H 0 c 0.148,0 0.253,0.437 0.253,0.952 v 12.32 C 0.253,-0.437 0.148,0 0,0"
+         style="fill:#009999;fill-opacity:1;fill-rule:evenodd;stroke:none"
+         transform="matrix(1.3333333,0,0,-1.3333333,985.65259,-1076.3156)" />
+      <path
+         id="path154"
+         d="m 0,0 h -36.268 c -0.812,0 -1.45,-0.98 -1.45,-2.14 v -27.72 c 0,-1.16 0.638,-2.14 1.45,-2.14 H 0 c 0.812,0 1.393,0.98 1.393,2.14 V -2.14 C 1.393,-0.98 0.812,0 0,0"
+         style="fill:#47cdcf;fill-opacity:1;fill-rule:evenodd;stroke:none"
+         transform="matrix(1.3333333,0,0,-1.3333333,1005.4665,-1061.0135)" />
+      <path
+         id="path156"
+         d="M 46.667,9.333 H 25.334 v 21.334 h 21.333 z"
+         style="fill:#009999;fill-opacity:1;fill-rule:nonzero;stroke:none"
+         transform="matrix(1.3333333,0,0,-1.3333333,933.24969,-1013.0135)" />
+      <g
+         opacity="0.5"
+         id="g159"
+         transform="translate(-922.75031,-1109.0135)">
+        <path
+           d="m 0,0 c 0,-2.454 -1.99,-4.444 -4.444,-4.444 -2.455,0 -4.445,1.99 -4.445,4.444 0,2.455 1.99,4.444 4.445,4.444 C -1.99,4.444 0,2.455 0,0"
+           style="fill:#000000;fill-opacity:1;fill-rule:nonzero;stroke:none"
+           transform="matrix(1.3333333,0,0,-1.3333333,1904,63.4076)"
+           id="path159" />
+      </g>
+      <g
+         opacity="0.800003"
+         id="g162"
+         transform="translate(-922.75031,-1109.0135)">
+        <path
+           d="m 0,0 c 0,-2.454 -1.99,-4.444 -4.444,-4.444 -2.455,0 -4.445,1.99 -4.445,4.444 0,2.455 1.99,4.444 4.445,4.444 C -1.99,4.444 0,2.455 0,0"
+           style="fill:#ffffff;fill-opacity:1;fill-rule:nonzero;stroke:none"
+           transform="matrix(1.3333333,0,0,-1.3333333,1915.8516,63.4076)"
+           id="path162" />
+      </g>
+      <g
+         opacity="0.800003"
+         id="g165"
+         transform="translate(-922.75031,-1109.0135)">
+        <path
+           d="m 0,0 c 0,-2.455 -1.99,-4.444 -4.444,-4.444 -2.455,0 -4.445,1.989 -4.445,4.444 0,2.454 1.99,4.444 4.445,4.444 C -1.99,4.444 0,2.454 0,0"
+           style="fill:#ffffff;fill-opacity:1;fill-rule:nonzero;stroke:none"
+           transform="matrix(1.3333333,0,0,-1.3333333,1904,75.259067)"
+           id="path165" />
+      </g>
+      <g
+         opacity="0.5"
+         id="g168"
+         transform="translate(-922.75031,-1109.0135)">
+        <path
+           d="m 0,0 c 0,-2.455 -1.99,-4.444 -4.444,-4.444 -2.455,0 -4.445,1.989 -4.445,4.444 0,2.454 1.99,4.444 4.445,4.444 C -1.99,4.444 0,2.454 0,0"
+           style="fill:#000000;fill-opacity:1;fill-rule:nonzero;stroke:none"
+           transform="matrix(1.3333333,0,0,-1.3333333,1915.8516,75.259067)"
+           id="path168" />
+      </g>
+      <path
+         id="path170"
+         d="m 0,0 h -46.159 c -1.034,0 -1.846,-0.763 -1.846,-1.664 v -21.561 c 0,-0.901 0.813,-1.664 1.846,-1.664 H 0 c 1.034,0 1.772,0.763 1.772,1.664 V -1.664 C 1.772,-0.763 1.034,0 0,0"
+         style="fill:#47cdcf;fill-opacity:1;fill-rule:evenodd;stroke:none"
+         transform="matrix(1.3333333,0,0,-1.3333333,1012.0713,-1103.6802)" />
+      <g
+         opacity="0.800003"
+         id="g173"
+         transform="translate(-922.75031,-1109.0135)">
+        <path
+           d="m 0,0 c -3.927,0 -7.111,3.184 -7.111,7.111 0,3.928 3.184,7.112 7.111,7.112 3.928,0 7.111,-3.184 7.111,-7.112 C 7.111,3.184 3.928,0 0,0"
+           style="fill:#ffffff;fill-opacity:1;fill-rule:evenodd;stroke:none"
+           transform="matrix(1.3333333,0,0,-1.3333333,1891.5553,29.9232)"
+           id="path173" />
+      </g>
+      <path
+         id="path175"
+         d="m 0,0 c -2.455,0 -4.444,1.99 -4.444,4.444 0,2.455 1.989,4.445 4.444,4.445 2.455,0 4.445,-1.99 4.445,-4.445 C 4.445,1.99 2.455,0 0,0"
+         style="fill:#000000;fill-opacity:1;fill-rule:evenodd;stroke:none"
+         transform="matrix(1.3333333,0,0,-1.3333333,968.80499,-1082.6463)" />
+      <g
+         opacity="0.8"
+         id="g178"
+         transform="translate(-922.75031,-1109.0135)">
+        <path
+           d="m 0,0 c -3.928,0 -7.111,3.184 -7.111,7.111 0,3.928 3.183,7.112 7.111,7.112 3.927,0 7.111,-3.184 7.111,-7.112 C 7.111,3.184 3.927,0 0,0"
+           style="fill:#ffffff;fill-opacity:1;fill-rule:evenodd;stroke:none"
+           transform="matrix(1.3333333,0,0,-1.3333333,1916.4447,29.9232)"
+           id="path178" />
+      </g>
+      <path
+         id="path180"
+         d="m 0,0 c -2.455,0 -4.445,1.99 -4.445,4.444 0,2.455 1.99,4.445 4.445,4.445 2.455,0 4.444,-1.99 4.444,-4.445 C 4.444,1.99 2.455,0 0,0"
+         style="fill:#000000;fill-opacity:1;fill-rule:evenodd;stroke:none"
+         transform="matrix(1.3333333,0,0,-1.3333333,993.69439,-1082.6463)" />
+    </g>
+  </g>
+</g>
+
+<g id="layer-target" inkscape:groupmode="layer">
+{% if target_positions|length > 0 %}
+{% set target_x, target_y = target_positions[0] %}
+  <g id="target"  transform="translate({{ target_x * sprite_sz }},{{ target_y * sprite_sz }})">
+    <circle style="opacity:0.5;fill:#cc0200;fill-opacity:1;stroke:none;"
+       id="target"
+       cx="48"
+       cy="48"
+       r="24"/>
+  </g>
+{% for x, y in target_positions[1:] %}
+<use xlink:href="#target" transform="translate({{ (x - target_x) * sprite_sz }}, {{ (y - target_y) * sprite_sz }})" />
+{% endfor %}
+{% endif %}
+</g>
+
+</svg>

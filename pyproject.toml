@@ -1,0 +1,133 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+
+[tool.ruff.format]
+exclude = ["third_party"]
+
+[tool.ruff]
+line-length = 127
+target-version = "py310"
+exclude = ["third_party"]
+
+[tool.ruff.isort]
+known-third-party = ["wandb"]
+
+[tool.ruff.lint]
+# Enable the isort rules.
+extend-select = ["I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]  # ignore third_party dir for now
+
+[tool.pyright]
+exclude = [
+    "learned_planner/notebooks/create_hard_reward.py",
+    "learned_planner/notebooks/plot_planning.py",
+    "wandb/**",  # Saved old codes
+    "third_party/**",  # Other libraries
+    "build/**", # build directory for strict editable install
+]
+strictListInference = true
+strictSetInference = true
+strictDictionaryInference = true
+reportIncompatibleMethodOverride = "error"
+reportMatchNotExhaustive = "error"
+reportOverlappingOverload = "error"
+reportMissingSuperCall = "error"
+reportInvalidStringEscapeSequence = "error"
+reportPropertyTypeMismatch = "error"
+reportUnusedImport = "warning"
+reportImportCycles = "warning"
+reportPrivateImportUsage = "warning"
+
+[tool.coverage.run]
+omit = [
+    "tests/*"
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "^ *\\.\\.\\.$",  # ... in abstract methods or whatever
+    "^ *pass$",  # same as above
+    ".*# pragma: no cover$"  # comments saying 'pragma: no cover'
+]
+
+[tool.setuptools.packages.find]
+include = ["learned_planner*", "experiments"]
+
+[tool.setuptools.package-data]
+"*" = ["../.circleci/*.yml", "../k8s/*.yaml"]
+
+[project]
+name = "learned-planner"
+version = "0.1.0"
+description = "Planning behavior in RNNs that plays Sokoban."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE.txt"}
+keywords = []
+
+authors = [
+  {name = "Adrià Garriga-Alonso", email = "adria@far.ai"},
+  {name = "Mohammad Taufeeque", email = "taufeeque@far.ai"},
+]
+
+maintainers = []
+
+classifiers = []
+
+dependencies = [
+    "gymnasium ~= 0.29.0",
+    "wandb ~=0.17.4",
+    "moviepy ~=1.0.3",
+    "shimmy ~=1.1.0",  # match version in dev
+    "optree ~= 0.10.0",
+    # Freeze the numpy version so OpenBLAS numpy gets installed with pip. Conda-default MKL numpy causes errors when
+    # running SubprocessVecEnv on the EPYC machines of Flamingo.
+    "numpy ==1.26.4",
+    "scikit-learn ~=1.4.0",
+    "cairosvg ~=2.7.1",
+    "names-generator ~=0.2.0",
+    "torchvision ~=0.18.1",
+    "stable_baselines3 @ git+https://github.com/AlignmentResearch/learned-planners-stable-baselines3.git",
+    "gym_sokoban @ git+https://github.com/AlignmentResearch/gym-sokoban.git",
+    "farconf @ git+https://github.com/AlignmentResearch/farconf.git",
+    "lp_cleanba @ git+https://github.com/AlignmentResearch/lp-cleanba.git",
+    "mamba_lens @ git+https://github.com/Phylliida/MambaLens.git",    
+]
+
+[project.optional-dependencies]
+torch = [
+    "torch ==2.3.1",
+]
+dev = [
+    "notebook ~=6.5.4",
+
+    # Formatting and typing, linting
+    "pyright ~=1.1.353",
+    "black ~=23.3.0",
+    "ruff ~=0.1.14",
+    "mypy ~=1.9.0",
+
+    # run tests
+    "pytest ~=8.1.1",
+    "pytest-cov >=4,<5",
+    "pytest-env ~=1.1.2",
+]
+launch_jobs = [
+    "names_generator ~=0.1.0",
+    "GitPython ~=3.1.41",
+]
+dev-local = [
+    "pre-commit ~=3.6.0",
+    "pip-tools ~=7.4.1",
+]
+
+[project.urls]
+Repository = "https://github.com/AlignmentResearch/learned-planner/"
+
+
+[project.scripts]
+main = "learned_planner.configs.command_config:main"
