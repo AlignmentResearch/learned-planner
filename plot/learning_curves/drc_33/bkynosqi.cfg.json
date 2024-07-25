@@ -1,0 +1,268 @@
+{
+  "net": {
+    "norm": {
+      "_type_": "cleanba.network:IdentityNorm"
+    },
+    "embed": [
+      {
+        "padding": "SAME",
+        "strides": [
+          1,
+          1
+        ],
+        "features": 32,
+        "use_bias": true,
+        "kernel_size": [
+          4,
+          4
+        ],
+        "initialization": "lecun"
+      },
+      {
+        "padding": "SAME",
+        "strides": [
+          1,
+          1
+        ],
+        "features": 32,
+        "use_bias": true,
+        "kernel_size": [
+          4,
+          4
+        ],
+        "initialization": "lecun"
+      }
+    ],
+    "_type_": "cleanba.convlstm:ConvLSTMConfig",
+    "residual": false,
+    "use_relu": false,
+    "recurrent": {
+      "conv": {
+        "padding": "SAME",
+        "strides": [
+          1,
+          1
+        ],
+        "features": 32,
+        "use_bias": true,
+        "kernel_size": [
+          3,
+          3
+        ],
+        "initialization": "lecun"
+      },
+      "fence_pad": "valid",
+      "forget_bias": 0,
+      "pool_and_inject": "horizontal",
+      "pool_projection": "per-channel",
+      "output_activation": "tanh"
+    },
+    "yang_init": false,
+    "head_scale": 1,
+    "skip_final": true,
+    "mlp_hiddens": [
+      256
+    ],
+    "n_recurrent": 3,
+    "normalize_input": false,
+    "repeats_per_step": 3
+  },
+  "loss": {
+    "gamma": 0.97,
+    "vf_coef": 0.25,
+    "ent_coef": 0.01,
+    "max_vf_error": 1,
+    "vf_loss_type": "square",
+    "logit_l2_coef": 1.5625e-06,
+    "vtrace_lambda": 0.5,
+    "weight_l2_coef": 1.5625e-08,
+    "clip_rho_threshold": 1,
+    "normalize_advantage": false,
+    "advantage_multiplier": "one",
+    "clip_pg_rho_threshold": 1
+  },
+  "seed": 823413895,
+  "adam_b1": 0.9,
+  "anneal_lr": true,
+  "eval_envs": {
+    "valid_medium": {
+      "env": {
+        "seed": 5454,
+        "split": "valid",
+        "_type_": "cleanba.environments:EnvpoolBoxobanConfig",
+        "env_id": "Sokoban-v0",
+        "verbose": 0,
+        "num_envs": 256,
+        "cache_path": "/opt/sokoban_cache",
+        "difficulty": "medium",
+        "reward_box": 1,
+        "num_threads": 0,
+        "reward_step": -0.1,
+        "max_num_players": 1,
+        "reward_finished": 10,
+        "n_levels_to_load": -1,
+        "load_sequentially": false,
+        "max_episode_steps": 240,
+        "min_episode_steps": 240,
+        "thread_affinity_offset": -1
+      },
+      "temperature": 0,
+      "steps_to_think": [
+        0,
+        2,
+        4,
+        8,
+        12,
+        16,
+        24,
+        32
+      ],
+      "n_episode_multiple": 2,
+      "safeguard_max_episode_steps": 30000
+    },
+    "test_unfiltered": {
+      "env": {
+        "seed": 5454,
+        "split": "test",
+        "_type_": "cleanba.environments:EnvpoolBoxobanConfig",
+        "env_id": "Sokoban-v0",
+        "verbose": 0,
+        "num_envs": 256,
+        "cache_path": "/opt/sokoban_cache",
+        "difficulty": "unfiltered",
+        "reward_box": 1,
+        "num_threads": 0,
+        "reward_step": -0.1,
+        "max_num_players": 1,
+        "reward_finished": 10,
+        "n_levels_to_load": -1,
+        "load_sequentially": false,
+        "max_episode_steps": 240,
+        "min_episode_steps": 240,
+        "thread_affinity_offset": -1
+      },
+      "temperature": 0,
+      "steps_to_think": [
+        0,
+        2,
+        4,
+        8,
+        12,
+        16,
+        24,
+        32
+      ],
+      "n_episode_multiple": 2,
+      "safeguard_max_episode_steps": 30000
+    }
+  },
+  "load_path": null,
+  "num_steps": 20,
+  "optimizer": "adam",
+  "train_env": {
+    "seed": 1413380980,
+    "split": "train",
+    "_type_": "cleanba.environments:EnvpoolBoxobanConfig",
+    "env_id": "Sokoban-v0",
+    "verbose": 0,
+    "num_envs": 1,
+    "cache_path": "/opt/sokoban_cache",
+    "difficulty": "unfiltered",
+    "reward_box": 1,
+    "num_threads": 0,
+    "reward_step": -0.1,
+    "max_num_players": 1,
+    "reward_finished": 10,
+    "n_levels_to_load": -1,
+    "load_sequentially": false,
+    "max_episode_steps": 120,
+    "min_episode_steps": 30,
+    "thread_affinity_offset": -1
+  },
+  "save_model": true,
+  "base_fan_in": 1,
+  "concurrency": true,
+  "distributed": false,
+  "rmsprop_eps": 1.5625e-07,
+  "base_run_dir": "/training/cleanba",
+  "train_epochs": 1,
+  "eval_at_steps": [
+    312960,
+    3716,
+    391,
+    97800,
+    35208,
+    21516,
+    782,
+    7824,
+    195600,
+    1173,
+    293400,
+    29340,
+    1564,
+    15648,
+    78240,
+    391200,
+    1956,
+    176040,
+    2347,
+    37164,
+    23472,
+    273840,
+    2738,
+    27384,
+    9780,
+    58680,
+    3129,
+    371640,
+    3520,
+    31296,
+    156480,
+    195,
+    17604,
+    3912,
+    254280,
+    586,
+    39120,
+    352080,
+    978,
+    25428,
+    11736,
+    1369,
+    136920,
+    1760,
+    234720,
+    33252,
+    2151,
+    19560,
+    332520,
+    5868,
+    2542,
+    117360,
+    2934,
+    215160,
+    13692,
+    3325
+  ],
+  "learning_rate": 0.0004,
+  "log_frequency": 10,
+  "max_grad_norm": 0.00025,
+  "queue_timeout": 300,
+  "rmsprop_decay": 0.99,
+  "local_num_envs": 256,
+  "optimizer_yang": false,
+  "sync_frequency": 1e+20,
+  "num_minibatches": 8,
+  "total_timesteps": 2002944000,
+  "actor_device_ids": [
+    0
+  ],
+  "num_actor_threads": 1,
+  "learner_device_ids": [
+    0
+  ],
+  "actor_update_cutoff": 1e+20,
+  "final_learning_rate": 4e-06,
+  "actor_update_frequency": 1,
+  "gradient_accumulation_steps": 1
+}

@@ -7,7 +7,6 @@ import os
 import pathlib
 import pickle
 import re
-import tarfile
 from functools import partial
 from typing import Any, Dict
 
@@ -1198,10 +1197,6 @@ all_optimal_lengths = []
 all_optimal_actions = []
 
 astar_ds = ds = huggingface_hub.snapshot_download("AlignmentResearch/boxoban-astar-solutions", repo_type="dataset")
-medium_valid_plans = pd.read_csv(astar_ds + "/medium_valid.csv.gz", dtype=str, index_col=("File", "Level"))
-
-with tarfile.open("data/astar.tar.gz", "r:gz") as tar:
-    tar.extractall(path="./")
 
 try:
     split = dataset_name.split("_")[0]
@@ -1210,8 +1205,10 @@ except IndexError:
 difficulty = dataset_name.split("_")[1]
 astar_base_path = pathlib.Path(f"./{difficulty}/{split}/logs/" if split is not None else f"./{difficulty}/logs/")
 
+astar_df = pd.read_csv(astar_ds + f"/{difficulty}_{split}.csv.gz", dtype=str, index_col=("File", "Level"))
+
 for i, (file_idx, lev_idx) in enumerate(all_level_infos):
-    row = medium_valid_plans.loc[(file_idx, lev_idx)]
+    row = astar_df.loc[(file_idx, lev_idx)]
     try:
         steps, search_steps = int(row["Steps"].strip()), int(row["SearchSteps"].strip())
         all_optimal_lengths.append(steps)
