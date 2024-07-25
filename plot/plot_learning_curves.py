@@ -87,7 +87,7 @@ plt.savefig(plots_dir / "valid_curve.pdf", format="pdf")
 
 # %% Training curves compared to Deepmind
 
-ARCHES = ["drc_33", "drc_11", "resnet"]
+ARCHES = ["drc_33", "resnet", "drc_11"]
 PLOT_DEEPMIND_ERRORS = False
 
 fig, axes = plt.subplots(1, 2, figsize=(6.75, 2.5), sharex=True)
