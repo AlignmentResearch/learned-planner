@@ -92,12 +92,11 @@ This script will generate the plots in the `plots` directory.
 If you use this code, please cite our work:
 
 ```bibtex
-@inproceedings{
-garriga-alonso2024planning,
-title={Planning behavior in a recurrent neural network that plays Sokoban},
-author={Adri{\`a} Garriga-Alonso and Mohammad Taufeeque and Adam Gleave},
-booktitle={ICML 2024 Workshop on Mechanistic Interpretability},
-year={2024},
-url={https://openreview.net/forum?id=T9sB3S2hok}
+@inproceedings{garriga-alonso2024planning,
+    title={Planning behavior in a recurrent neural network that plays Sokoban},
+    author={Adri{\`a} Garriga-Alonso and Mohammad Taufeeque and Adam Gleave},
+    booktitle={ICML 2024 Workshop on Mechanistic Interpretability},
+    year={2024},
+    url={https://openreview.net/forum?id=T9sB3S2hok}
 }
 ```
