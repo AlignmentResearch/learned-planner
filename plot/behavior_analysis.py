@@ -583,7 +583,7 @@ for network_name in network_names:
 for network_name in ["drc33", "drc11"]:
     episode_successes = [success_rates[network_name][step] for step in steps_to_think_all]
 
-    fig, ax1 = plt.subplots(figsize=(3.25, 2.75))
+    fig, ax1 = plt.subplots(figsize=(3.25, 2))
     ax1.grid(True)
     ax1.set_xlabel("Number of extra thinking steps at episode start")
     ax1.set_ylabel("Success Rate")
@@ -604,7 +604,7 @@ for network_name in ["drc33", "drc11"]:
     ax1.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, pos: "{0:g}".format(x)))
     ax1.xaxis.set_major_locator(ticker.FixedLocator(x_steps_to_think))
     ax1.get_xaxis().set_minor_formatter(matplotlib.ticker.NullFormatter())
-    ax1.legend(bbox_to_anchor=(1.1, 1.4, -0.1, -0.1), ncol=2)
+    # ax1.legend(bbox_to_anchor=(1.1, 1.4, -0.1, -0.1), ncol=2)
 
     plt.tight_layout()
     plt.savefig(plots_dir / f"success_vs_steps_to_think_{network_name}_{dataset_name}.pdf", format="pdf", bbox_inches="tight")
@@ -625,7 +625,10 @@ resnet_best_on_test = df_resnet_test.iloc[-1].iloc[0]
 
 steps_when_drc_resnet_same = df_drc_test[df_drc_test.iloc[:, 0] >= resnet_best_on_test].iloc[0].name
 print("Training Steps where DRC33 is same as best ResNet on test:", steps_when_drc_resnet_same)
-print("DRC33 val medium success rate:", df_drc_val.loc[steps_when_drc_resnet_same].iloc[0])
+print(
+    f"DRC33 @ {steps_when_drc_resnet_same//(10**6)}M val medium success rate:",
+    df_drc_val.loc[steps_when_drc_resnet_same].iloc[0],
+)
 print("ResNet val medium success rate (best):", df_resnet_val.iloc[-1].iloc[0])
 print("best thinking step val medium success rate:", max(df_drc_val.loc[steps_when_drc_resnet_same]))
 
@@ -1036,13 +1039,23 @@ for cyc_idx, (lfi, li, cycle) in tqdm(enumerate(all_cycles), total=len(all_cycle
         int
     )
     curr_same_acts_after_cycle = (actions_after_cycle[:min_len] == actions_after_thinking[:min_len]).astype(int)
-    same_obs_after_cycle[:min_len] += curr_same_obs_after_cycle
-    same_obs_acts_after_cycle[:min_len] += curr_same_obs_after_cycle * curr_same_acts_after_cycle
+
+    try:
+        first_idx_where_obs_not_same = np.where(curr_same_obs_after_cycle == 0)[0][0]
+    except IndexError:
+        first_idx_where_obs_not_same = min_len
+    same_obs_after_cycle[:first_idx_where_obs_not_same] += 1
+    curr_same_obs_acts_after_cycle = curr_same_obs_after_cycle * curr_same_acts_after_cycle
+    try:
+        first_idx_where_obs_acts_not_same = np.where(curr_same_obs_after_cycle == 0)[0][0]
+    except IndexError:
+        first_idx_where_obs_acts_not_same = min_len
+    same_obs_acts_after_cycle[:first_idx_where_obs_acts_not_same] += 1
     num_cycles_used[:min_len] += 1
 
     if all_episode_info[0]["episode_successes"][i]:
-        same_obs_after_cycle_solved[:min_len] += curr_same_obs_after_cycle
-        same_obs_acts_after_cycle_solved[:min_len] += curr_same_obs_after_cycle * curr_same_acts_after_cycle
+        same_obs_after_cycle_solved[:first_idx_where_obs_not_same] += 1
+        same_obs_acts_after_cycle_solved[:first_idx_where_obs_acts_not_same] += 1
         num_cycles_used_solved[:min_len] += 1
 
 same_obs_after_cycle = same_obs_after_cycle / num_cycles_used
@@ -1050,9 +1063,13 @@ same_obs_acts_after_cycle = same_obs_acts_after_cycle / num_cycles_used
 
 same_obs_after_cycle_solved = same_obs_after_cycle_solved / num_cycles_used_solved
 same_obs_acts_after_cycle_solved = same_obs_acts_after_cycle_solved / num_cycles_used_solved
+
+print("% of same obs after cycle after", check_actions, "steps:", same_obs_after_cycle[-1])
+print("% of same obs on solved levels after", check_actions, "steps:", same_obs_after_cycle_solved[-1])
+
 x = np.arange(check_actions - 1) + 1
 plt.plot(x, same_obs_after_cycle[1:], label="Same state")
-plt.plot(x, same_obs_acts_after_cycle[1:], label="Same state & action")
+# plt.plot(x, same_obs_acts_after_cycle[1:], label="Same state & action")
 plt.grid(True)
 # plt.xticks([1, 5, 10, 15, 20, 25, 30])
 plt.xlabel("Steps after cycle")
@@ -1064,7 +1081,7 @@ plt.close()
 
 
 plt.plot(x, same_obs_after_cycle_solved[1:], label="Same state")
-plt.plot(x, same_obs_acts_after_cycle_solved[1:], label="Same state & action")
+# plt.plot(x, same_obs_acts_after_cycle_solved[1:], label="Same state & action")
 plt.grid(True)
 # plt.xticks([1, 5, 10, 15, 20, 25, 30])
 plt.xlabel("Steps after cycle")

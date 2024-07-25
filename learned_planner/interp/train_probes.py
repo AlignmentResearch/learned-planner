@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader, Dataset, random_split
 from tqdm import tqdm
 
 from learned_planner import __main__ as lp_main
-from learned_planner.environments import BoxobanConfig
+from learned_planner.environments import BoxobanConfig, EnvConfig
 from learned_planner.interp.collect_dataset import DatasetStore
 from learned_planner.interp.utils import load_jax_model_to_torch
 from learned_planner.policies import ConvLSTMOptions
@@ -240,10 +240,10 @@ class TrainProbeConfig(ABCCommandConfig):
         return main(self)
 
 
-def train(args: TrainProbeConfig):
+def train(args: TrainProbeConfig, eval_cfg: EnvConfig, eval_env):
     device = args.th_device
     if args.policy_path:
-        policy_cfg, policy = load_jax_model_to_torch(Path(args.policy_path))
+        policy_cfg, policy = load_jax_model_to_torch(Path(args.policy_path), eval_env)
         policy.to(device)
         policy.eval()
     else:
@@ -316,9 +316,8 @@ def train(args: TrainProbeConfig):
                         policy,
                         acts_ds.keys,
                         policy_cfg.features_extractor.repeats_per_step,  # type: ignore
-                        args.eval_cache_path,
-                        args.eval_split,
-                        args.eval_difficulty,
+                        eval_cfg,
+                        eval_env,
                         args.eval_episodes,
                         args.eval_type,
                     )
@@ -334,27 +333,17 @@ def evaluate(
     policy,
     cache_keys,
     repeats_per_step,
-    eval_cache_path=Path("/training/.sokoban_cache"),
-    eval_split: Literal["train", "valid", "test"] = "valid",
-    eval_difficulty: Literal["unfiltered", "medium", "hard"] = "unfiltered",
+    eval_cfg,
+    eval_env,
     eval_episodes=20,
     eval_type="probe",
 ):
-    eval_cfg = BoxobanConfig(
-        max_episode_steps=80,
-        min_episode_steps=80,
-        tinyworld_obs=True,
-        cache_path=eval_cache_path,
-        split=eval_split,
-        difficulty=eval_difficulty,
-    )
-    vec_env = VecTransposeImage(DummyVecEnv([eval_cfg.make]))
     final_reward, reward = eval_cfg.reward_finished + eval_cfg.reward_box + eval_cfg.reward_step, 0.0
     num_successes = 0
     probe_matches_with_value_head = 0
     num_steps = 0
     for i in range(eval_episodes):
-        obs = vec_env.reset()
+        obs = eval_env.reset()
         done = False
         state = policy.recurrent_initial_state(n_envs=1, device=policy.device)
         ep_len = 0
@@ -366,7 +355,7 @@ def evaluate(
             else:
                 if ep_len == 0:
                     _, _, _, state = policy(obs, state, th.tensor([True], device=policy.device), deterministic=True)
-                next_acts, next_obs = vec_env.envs[0].next_observations()
+                next_acts, next_obs = eval_env.envs[0].next_observations()
                 num_valid_actions = len(next_acts)
                 next_obs = th.tensor(np.array(next_obs), dtype=th.int32, device=policy.device).permute(0, 3, 1, 2)
                 pol_state = tree_map(partial(th.repeat_interleave, repeats=num_valid_actions, dim=1), state)
@@ -391,7 +380,7 @@ def evaluate(
                 action = next_acts[action_idx_in_next_acts]
                 state = tree_index(pol_state, (slice(None), action_idx_in_next_acts))
                 state = tree_map(partial(th.unsqueeze, dim=1), state)
-            obs, reward, done, _ = vec_env.step(th.tensor([action]))
+            obs, reward, done, _ = eval_env.step(th.tensor([action]))
             ep_len += 1
         if np.isclose(reward, final_reward):
             num_successes += 1
@@ -401,6 +390,16 @@ def evaluate(
 
 def main(args: TrainProbeConfig):
     set_seed(args.seed)
+
+    eval_cfg = BoxobanConfig(
+        max_episode_steps=80,
+        min_episode_steps=80,
+        tinyworld_obs=True,
+        cache_path=args.eval_cache_path,
+        split=args.eval_split,
+        difficulty=args.eval_difficulty,
+    )
+    vec_env = VecTransposeImage(DummyVecEnv([eval_cfg.make]))
 
     if args.eval_only:
         dataset_path = Path(args.dataset_path)
@@ -414,7 +413,7 @@ def main(args: TrainProbeConfig):
         else:
             model = th.load(args.eval_model)
         assert args.policy_path, "Policy path must be provided for evaluation"
-        policy_cfg, policy = load_jax_model_to_torch(args.policy_path)
+        policy_cfg, policy = load_jax_model_to_torch(args.policy_path, vec_env)
         assert isinstance(policy_cfg.features_extractor, ConvLSTMOptions)
         policy.to(model.device)
         policy.eval()
@@ -424,11 +423,13 @@ def main(args: TrainProbeConfig):
             acts_ds.keys,
             policy_cfg.features_extractor.repeats_per_step,
             eval_type=args.eval_type,
+            eval_cfg=eval_cfg,
+            eval_env=vec_env,
         )
         print(f"Success rate: {success_rate}, Max value match: {max_value_match}")
         return None, {"test/success_rate": success_rate, "test/max_value_match": max_value_match}
     else:
-        return train(args)
+        return train(args, eval_cfg, vec_env)
 
 
 if __name__ == "__main__":

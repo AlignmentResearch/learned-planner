@@ -1,4 +1,4 @@
-import gym_sokoban  # noqa: F401
+import gym_sokoban  # noqa
 import gymnasium as gym
 
 
