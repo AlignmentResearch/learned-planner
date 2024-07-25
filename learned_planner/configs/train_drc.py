@@ -9,7 +9,6 @@ from learned_planner.configs.command_config import WandbCommandConfig
 from learned_planner.configs.env_sokoban import envpool_sokoban, envpool_sokoban_103
 from learned_planner.configs.misc import DEFAULT_TRAINING, random_seed
 from learned_planner.convlstm import CompileConfig, ConvConfig, ConvLSTMCellConfig, ConvLSTMOptions
-from learned_planner.environments import BoxobanConfig
 from learned_planner.optimizers import AdamOptimizerConfig, PolynomialLRSchedule
 from learned_planner.policies import ConvLSTMPolicyConfig, NetArchConfig
 from learned_planner.train import RecurrentPPOConfig, TrainConfig

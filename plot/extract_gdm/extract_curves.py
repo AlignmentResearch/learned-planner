@@ -119,7 +119,7 @@ def ny(y):
 
 def to_series(xs, ys, name):
     aa = pd.DataFrame(data=dict(x=nx(xs), y=ny(ys)))
-    aa = aa.round(dict(x=0, y=10))
+    aa = aa.round(dict(x=0, y=10))  # type: ignore
     aa = aa.drop_duplicates(subset=["x"])
     out = aa.set_index(["x"]).y
     out.name = name

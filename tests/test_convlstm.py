@@ -1,20 +1,9 @@
-from typing import Dict, Literal, Optional
+from typing import Literal
 
-import numpy as np
 import pytest
 import torch as th
 from gymnasium import spaces
-from gymnasium.envs.classic_control.cartpole import CartPoleEnv
-from gymnasium.wrappers.time_limit import TimeLimit
-from stable_baselines3 import RecurrentPPO
-from stable_baselines3.common.callbacks import EvalCallback
-from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.evaluation import evaluate_policy
-from stable_baselines3.common.recurrent.policies import (
-    RecurrentFeaturesExtractorActorCriticPolicy,
-)
 from stable_baselines3.common.type_aliases import check_cast
-from stable_baselines3.common.vec_env import VecNormalize
 
 from learned_planner.configs.train_drc import drc_1_1, drc_3_3
 from learned_planner.convlstm import ConvConfig, ConvLSTMCell, ConvLSTMCellConfig, ConvLSTMOptions

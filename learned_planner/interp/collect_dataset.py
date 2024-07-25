@@ -49,7 +49,7 @@ class DatasetStore:
             else:
                 assert full_length == len(v), f"{full_length} != {v.shape}[0] for {k}"
 
-        (self.file_idx is None) == (self.level_idx is None), "file_idx and level_idx must be provided together"
+        assert (self.file_idx is None) == (self.level_idx is None), "file_idx and level_idx must be provided together"
 
     def save(self):
         self.cpu()
@@ -462,8 +462,6 @@ def evaluate_policy_and_collect_dataset(
 
 
 def collect_dataset(model_path, args):
-    cfg, policy = load_jax_model_to_torch(model_path)
-    assert isinstance(cfg.features_extractor, ConvLSTMOptions)
     if TEST:
         max_episode_steps = 10
         n_eval_episodes = 1
@@ -477,7 +475,6 @@ def collect_dataset(model_path, args):
         n_envs = 64
         device = th.device(args.device)
     print("Device:", device)
-    policy = policy.to(device)
 
     for i, steps_to_think in enumerate(n_steps_to_think):
         env_cfg, eval_env = create_eval_env(
@@ -489,6 +486,9 @@ def collect_dataset(model_path, args):
             BOXOBAN_CACHE=pathlib.Path(args.boxoban_cache),
             envpool=args.envpool,
         )
+        cfg, policy = load_jax_model_to_torch(model_path, eval_env)
+        assert isinstance(cfg.features_extractor, ConvLSTMOptions)
+        policy = policy.to(device)
         solve_reward = env_cfg.reward_finished + env_cfg.reward_box + env_cfg.reward_step
         mean, std, solved = evaluate_policy_and_collect_dataset(
             policy,
