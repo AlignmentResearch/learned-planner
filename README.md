@@ -87,6 +87,8 @@ python plot/behavior_analysis.py
 
 This script will generate the plots in the `plots` directory.
 
+The A* solutions for the [Boxoban levels](https://github.com/google-deepmind/boxoban-levels) can be found [here](https://huggingface.co/datasets/AlignmentResearch/boxoban-astar-solutions).
+
 ## Citation
 
 If you use this code, please cite our work:
