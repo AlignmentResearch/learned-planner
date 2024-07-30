@@ -21,9 +21,11 @@ RUN apt-get update -q \
     # essential for testing
     libgl-dev libglib2.0-0 zip make \
     # devbox niceties
-    curl vim tmux less sudo \
+    curl vim tmux less sudo nano \
     # CircleCI
     ssh \
+    # For svg / video rendering
+    libcairo2 ffmpeg ttf-mscorefonts-installer \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -53,6 +55,11 @@ RUN pip install "${ENVPOOL_WHEEL}"
 # Copy whole repo and install
 COPY --chown=${USERNAME}:${USERNAME} . .
 RUN pip install --require-virtualenv -e ".[dev]"
+
+# download Boxoban levels to /training/.sokoban_cache/
+RUN mkdir -p "/training/.sokoban_cache/"
+RUN git clone https://github.com/google-deepmind/boxoban-levels "/training/.sokoban_cache/boxoban-levels-master"
+
 
 # Run Pyright so its Node.js package gets installed
 RUN pyright .
