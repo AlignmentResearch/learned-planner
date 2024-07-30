@@ -43,6 +43,11 @@ RUN python3 -m venv "${VIRTUAL_ENV}" --system-site-packages \
     && echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers \
     && mkdir -p "/workspace" \
     && chown -R ${USERNAME}:${USERNAME} "${VIRTUAL_ENV}" "/workspace"
+
+# download Boxoban levels to /training/.sokoban_cache/
+RUN mkdir -p "/training/.sokoban_cache/"
+RUN git clone https://github.com/google-deepmind/boxoban-levels "/training/.sokoban_cache/boxoban-levels-master"
+
 USER ${USERNAME}
 WORKDIR "/workspace"
 
@@ -55,11 +60,6 @@ RUN pip install "${ENVPOOL_WHEEL}"
 # Copy whole repo and install
 COPY --chown=${USERNAME}:${USERNAME} . .
 RUN pip install --require-virtualenv -e ".[dev]"
-
-# download Boxoban levels to /training/.sokoban_cache/
-RUN mkdir -p "/training/.sokoban_cache/"
-RUN git clone https://github.com/google-deepmind/boxoban-levels "/training/.sokoban_cache/boxoban-levels-master"
-
 
 # Run Pyright so its Node.js package gets installed
 RUN pyright .
