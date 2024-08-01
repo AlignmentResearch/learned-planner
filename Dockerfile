@@ -29,7 +29,7 @@ RUN apt-get update -q \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-RUN echo ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula \
+RUN apt-get update -q && echo ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula \
     select true | debconf-set-selections && apt-get install -y ttf-mscorefonts-installer
 
 # Tini: reaps zombie processes and forwards signals
