@@ -85,14 +85,14 @@ output_base_path = pathlib.Path(output_base_path)
 if not pathlib.Path(local_or_hgf_repo_path).exists():
     try:
         output_base_path = output_base_path / "_".join(local_or_hgf_repo_path.split("/"))
-        local_or_hgf_repo_path = huggingface_hub.snapshot_download(
+        local_path = huggingface_hub.snapshot_download(
             "AlignmentResearch/learned-planner",
             allow_patterns=[local_or_hgf_repo_path + "/*"],
         )
     except huggingface_hub.errors.HFValidationError:
         raise ValueError(f"Model {local_or_hgf_repo_path} not found in local cache or on the hub")
 
-local_or_hgf_repo_path = pathlib.Path(local_or_hgf_repo_path)
+local_or_hgf_repo_path = pathlib.Path(local_path) / local_or_hgf_repo_path
 
 plots_dir = output_base_path / "plots"
 plots_dir.mkdir(exist_ok=True, parents=True)
