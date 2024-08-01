@@ -29,8 +29,14 @@ RUN apt-get update -q \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-RUN echo ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula \
-    select true | debconf-set-selections && apt-get install -y ttf-mscorefonts-installer
+RUN apt-get update -q \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
+        software-properties-common \
+    && add-apt-repository multiverse \
+    && apt-get update -q \
+    && echo ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true | debconf-set-selections \
+    && apt-get install -y ttf-mscorefonts-installer
 
 # Tini: reaps zombie processes and forwards signals
 ENTRYPOINT ["/usr/bin/tini", "--"]
