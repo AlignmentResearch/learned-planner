@@ -25,9 +25,12 @@ RUN apt-get update -q \
     # CircleCI
     ssh \
     # For svg / video rendering
-    libcairo2 ffmpeg msttcorefonts \
+    libcairo2 ffmpeg \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+RUN echo ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula \
+    select true | debconf-set-selections && apt-get install -y ttf-mscorefonts-installer
 
 # Tini: reaps zombie processes and forwards signals
 ENTRYPOINT ["/usr/bin/tini", "--"]
@@ -45,8 +48,8 @@ RUN python3 -m venv "${VIRTUAL_ENV}" --system-site-packages \
     && chown -R ${USERNAME}:${USERNAME} "${VIRTUAL_ENV}" "/workspace"
 
 # download Boxoban levels to /training/.sokoban_cache/
-RUN mkdir -p "/training/.sokoban_cache/"
-RUN git clone https://github.com/google-deepmind/boxoban-levels "/training/.sokoban_cache/boxoban-levels-master"
+RUN mkdir -p "/training/.sokoban_cache/" && chown -R ${USERNAME}:${USERNAME} "/training" \
+    && git clone https://github.com/google-deepmind/boxoban-levels "/training/.sokoban_cache/boxoban-levels-master"
 
 USER ${USERNAME}
 WORKDIR "/workspace"
