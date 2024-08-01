@@ -193,7 +193,7 @@ class EvalConfig:
     safeguard_max_episode_steps: int = 30000
 
     def run(self, policy: Policy, get_action_fn, params, *, key: jnp.ndarray) -> dict[str, float]:
-        assert isinstance(self.env, EnvpoolBoxobanConfig)
+        # assert isinstance(self.env, EnvpoolBoxobanConfig)
         key, carry_key = jax.random.split(key, 2)
         max_steps = min(self.safeguard_max_episode_steps, self.env.max_episode_steps)
         episode_starts_no = jnp.zeros(self.env.num_envs, dtype=jnp.bool_)
@@ -530,9 +530,9 @@ steps_to_think_for_pe = [0, 2, 4, 8, 12, 16]
 network_names = ["drc33", "drc11"]
 
 success_rates = {}
-
+data_dir = pathlib.Path(__file__).parent / "data"
 for network_name in network_names:
-    df = pd.read_csv(f"data/{network_name}_{dataset_name}_success_across_thinking_steps.csv", index_col="Step")
+    df = pd.read_csv(data_dir / f"{network_name}_{dataset_name}_success_across_thinking_steps.csv", index_col="Step")
     select_columns = [col.endswith("_episode_successes") for col in df.columns]
     df = df.loc[:, select_columns]
     run_name = df.columns[0].split(" - ")[0]
@@ -543,7 +543,7 @@ for network_name in network_names:
 
     df = df[steps_to_think_for_pe]
 
-    df_resnet = pd.read_csv(f"data/resnet_{dataset_name}_success_across_thinking_steps.csv", index_col="Step")
+    df_resnet = pd.read_csv(data_dir / f"resnet_{dataset_name}_success_across_thinking_steps.csv", index_col="Step")
 
     per_step = df
     # per_step = per_step - per_step.loc[0]
@@ -616,10 +616,10 @@ for network_name in ["drc33", "drc11"]:
 ### Medium level success rate when DRC and ResNet are same on test set
 
 # %%
-df_drc_val = pd.read_csv("data/drc33_valid_medium_success_across_thinking_steps.csv", index_col="Step")
-df_resnet_val = pd.read_csv("data/resnet_valid_medium_success_across_thinking_steps.csv", index_col="Step")
-df_drc_test = pd.read_csv("data/drc33_test_unfiltered_success_across_thinking_steps.csv", index_col="Step")
-df_resnet_test = pd.read_csv("data/resnet_test_unfiltered_success_across_thinking_steps.csv", index_col="Step")
+df_drc_val = pd.read_csv(data_dir / "drc33_valid_medium_success_across_thinking_steps.csv", index_col="Step")
+df_resnet_val = pd.read_csv(data_dir / "resnet_valid_medium_success_across_thinking_steps.csv", index_col="Step")
+df_drc_test = pd.read_csv(data_dir / "drc33_test_unfiltered_success_across_thinking_steps.csv", index_col="Step")
+df_resnet_test = pd.read_csv(data_dir / "resnet_test_unfiltered_success_across_thinking_steps.csv", index_col="Step")
 resnet_best_on_test = df_resnet_test.iloc[-1].iloc[0]
 
 steps_when_drc_resnet_same = df_drc_test[df_drc_test.iloc[:, 0] >= resnet_best_on_test].iloc[0].name

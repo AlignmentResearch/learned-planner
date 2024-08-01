@@ -25,7 +25,7 @@ RUN apt-get update -q \
     # CircleCI
     ssh \
     # For svg / video rendering
-    libcairo2 ffmpeg ttf-mscorefonts-installer \
+    libcairo2 ffmpeg msttcorefonts \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
