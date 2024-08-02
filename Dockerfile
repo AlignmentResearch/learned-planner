@@ -26,6 +26,8 @@ RUN apt-get update -q \
     ssh \
     # For svg / video rendering
     libcairo2 ffmpeg \
+    # PDF viewer
+    evince \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
