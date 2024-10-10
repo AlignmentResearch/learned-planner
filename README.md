@@ -44,18 +44,31 @@ The trained DRC networks are available in our [huggingface model hub](https://hu
 
 ## Loading the model
 
+First, you will need to clone the Boxoban levels. We will use the `BOXOBAN_CACHE` environment variable to specify the directory
+
+```
+BOXOBAN_CACHE="/opt/sokoban_cache"  # change if desired
+sudo mkdir -p "$BOXOBAN_CACHE"
+sudo git clone https://github.com/google-deepmind/boxoban-levels \
+  "$BOXOBAN_CACHE/boxoban-levels-master"
+```
+
 You can load the model using the following code:
 
 ```python
+import pathlib
+import os
+
 from cleanba.environments import BoxobanConfig
 from cleanba import cleanba_impala
-from learned_planner.interp.utils import jax_to_th, load_jax_model_to_torch
+from huggingface_hub import snapshot_download
 
 MODEL_PATH_IN_REPO = "drc33/bkynosqi/cp_2002944000/" # DRC(3, 3) 2B checkpoint
 MODEL_BASE_PATH = pathlib.Path(
     snapshot_download("AlignmentResearch/learned-planner", allow_patterns=[MODEL_PATH_IN_REPO + "*"]),
 ) # only download the specific model
 MODEL_PATH = MODEL_BASE_PATH / MODEL_PATH_IN_REPO
+BOXOBAN_CACHE=os.environ.get("BOXOBAN_CACHE", "/opt/sokoban_cache")
 
 env = BoxobanConfig(
     cache_path=BOXOBAN_CACHE,
