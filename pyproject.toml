@@ -86,7 +86,7 @@ dependencies = [
     "moviepy ~=1.0.3",
     "shimmy ~=1.1.0",  # match version in dev
     "optree ~= 0.10.0",
-    "plotly ~=5.20.0",
+    "plotly",
     # Freeze the numpy version so OpenBLAS numpy gets installed with pip. Conda-default MKL numpy causes errors when
     # running SubprocessVecEnv on the EPYC machines of Flamingo.
     "numpy ==1.26.4",
@@ -98,7 +98,7 @@ dependencies = [
     "stable_baselines3 @ git+https://github.com/AlignmentResearch/learned-planners-stable-baselines3.git",
     "gym_sokoban @ git+https://github.com/AlignmentResearch/gym-sokoban.git",
     "farconf @ git+https://github.com/AlignmentResearch/farconf.git",
-    "lp_cleanba @ git+https://github.com/AlignmentResearch/lp-cleanba.git@ef059c3d7e1d22515cc9d18e5927dc49db60cf1c",
+    "train_learned_planner @ git+https://github.com/AlignmentResearch/train-learned-planner.git",
     "mamba_lens @ git+https://github.com/taufeeque9/MambaLens.git",
 ]
 
