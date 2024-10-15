@@ -24,7 +24,7 @@ def eval_command(
             alg=recurrent_ppo_103(device=device),
             eval_env=dataclasses.replace(
                 envpool_sokoban_103(
-                    training_mount / ".sokoban_cache",
+                    training_mount / "sokoban_cache2",
                     n_envs=n_envs,
                     max_episode_steps=max_episode_steps,
                 )[1],  # [1] use the validation split

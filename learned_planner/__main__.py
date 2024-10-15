@@ -12,6 +12,7 @@ from stable_baselines3.common.type_aliases import check_cast
 import learned_planner.cmd  # type: ignore
 import learned_planner.evaluate  # noqa: F401
 from learned_planner.configs.command_config import WandbCommandConfig
+from learned_planner.interp.collect_dataset import DatasetStore  # noqa: F401
 
 
 def setup_run(cfg: WandbCommandConfig) -> Path:
@@ -57,11 +58,14 @@ def setup_run(cfg: WandbCommandConfig) -> Path:
     #
     # We make a new directory with a different name ("local-files") and save our files there, so they don't get synced
     # to wandb.
-    wandb_run_dir = Path(wandb.run.dir)
-    assert wandb_run_dir.name == "files"
 
-    files_dir = wandb_run_dir.parent / "local-files"
-    files_dir.mkdir()
+    wandb_run_dir = Path(wandb.run.dir)
+    if wandb_kwargs["mode"] == "disabled":
+        files_dir = wandb_run_dir / "local-files"
+    else:
+        assert wandb_run_dir.name == "files"
+        files_dir = wandb_run_dir.parent / "local-files"
+    files_dir.mkdir(exist_ok=True)
     return files_dir
 
 

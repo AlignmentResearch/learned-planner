@@ -30,8 +30,9 @@ from cleanba.environments import BoxobanConfig, EnvConfig, EnvpoolBoxobanConfig
 from cleanba.network import Policy
 from flax.training.train_state import TrainState
 from matplotlib import pyplot as plt
-from render_svg import episode_obs_to_svgs
 from tqdm import tqdm
+
+from learned_planner.interp.render_svg import episode_obs_to_svgs
 
 wandb.init(mode="disabled")
 
@@ -70,7 +71,12 @@ parser.add_argument("--split", type=str, default="valid", choices=["valid", "tes
 parser.add_argument("--difficulty", type=str, default="medium", choices=["unfiltered", "medium", "hard"])
 parser.add_argument("--use_envpool", action="store_true")
 parser.add_argument("--save_video", action="store_true")
-
+parser.add_argument(
+    "--num_levels",
+    type=int,
+    default=100,
+    help="Number of levels to evaluate. Set to -1 to evaluate all levels in the dataset.",
+)  # increase for better results. Requires more memory & storage for cache.
 args = parser.parse_args()
 local_or_hgf_repo_path = args.local_or_hgf_repo_path
 output_base_path = args.output_base_path
@@ -123,6 +129,10 @@ def eval_with_noop(
 
     reset_key, sub_reset_key = jax.random.split(obs_reset_key)
     reset_seed = int(jax.random.randint(sub_reset_key, (), minval=0, maxval=2**31 - 2))
+    if envpool:
+        raise NotImplementedError(
+            "Envpool not supported with reset using level index. Try running without -e flag for this part of the script."
+        )
     obs, level_infos = envs.reset(seed=reset_seed, options={"level_file_idx": level_file_idx, "level_idx": level_idx})
     assert envs.num_envs == 1, "multiple envs not supported with reset using level index."
     assert (
@@ -446,7 +456,9 @@ def get_cfg():
                     num_envs=100,
                     **common_args,
                 ),
-                n_episode_multiple=10,  # only 1000 levels in unfil test set
+                n_episode_multiple=10  # only 1000 levels in unfil test set
+                if args.num_levels == -1
+                else np.ceil(args.num_levels / 100).astype(int).item(),
                 steps_to_think=steps_to_think_all,
             )
         elif dataset_name == "valid_medium":
@@ -455,7 +467,7 @@ def get_cfg():
                     num_envs=500,
                     **common_args,
                 ),
-                n_episode_multiple=10,
+                n_episode_multiple=100 if args.num_levels == -1 else np.ceil(args.num_levels / 100).astype(int).item(),
                 steps_to_think=steps_to_think_all,
             )
         elif dataset_name == "hard":
@@ -464,7 +476,7 @@ def get_cfg():
                     num_envs=119,
                     **common_args,
                 ),
-                n_episode_multiple=28,
+                n_episode_multiple=28 if args.num_levels == -1 else np.ceil(args.num_levels / 119).astype(int).item(),
                 steps_to_think=steps_to_think_all,
             )
         else:
@@ -473,7 +485,7 @@ def get_cfg():
                     num_envs=500,
                     **common_args,
                 ),
-                n_episode_multiple=1,
+                n_episode_multiple=10 if args.num_levels == -1 else np.ceil(args.num_levels / 500).astype(int).item(),
                 steps_to_think=steps_to_think_all,
             )
     else:
@@ -485,17 +497,19 @@ def get_cfg():
                     n_levels_to_load=1000,
                     **common_args,
                 ),
-                n_episode_multiple=10,  # only 1000 levels in unfil test set
+                n_episode_multiple=10  # only 1000 levels in unfil test set
+                if args.num_levels == -1
+                else np.ceil(args.num_levels / 100).astype(int).item(),
                 steps_to_think=steps_to_think_all,
             )
         elif dataset_name == "valid_medium":
             return EvalConfig(
                 EnvpoolBoxobanConfig(
                     num_envs=500,
-                    n_levels_to_load=5000,
+                    n_levels_to_load=50000,
                     **common_args,
                 ),
-                n_episode_multiple=10,
+                n_episode_multiple=100 if args.num_levels == -1 else np.ceil(args.num_levels / 500).astype(int).item(),
                 steps_to_think=steps_to_think_all,
             )
         elif dataset_name == "hard":
@@ -505,7 +519,7 @@ def get_cfg():
                     n_levels_to_load=3332,
                     **common_args,
                 ),
-                n_episode_multiple=28,
+                n_episode_multiple=28 if args.num_levels == -1 else np.ceil(args.num_levels / 119).astype(int).item(),
                 steps_to_think=steps_to_think_all,
             )
         else:
@@ -514,7 +528,7 @@ def get_cfg():
                     num_envs=500,
                     **common_args,
                 ),
-                n_episode_multiple=1,
+                n_episode_multiple=10 if args.num_levels == -1 else np.ceil(args.num_levels / 500).astype(int).item(),
                 steps_to_think=steps_to_think_all,
             )
 
@@ -545,7 +559,7 @@ for network_name in network_names:
 
     df_resnet = pd.read_csv(data_dir / f"resnet_{dataset_name}_success_across_thinking_steps.csv", index_col="Step")
 
-    per_step = df
+    per_step = df * 100
     # per_step = per_step - per_step.loc[0]
 
     fig, axes = plt.subplots(2, 1, figsize=(3.25, 2.5), sharex=True, height_ratios=[3, 1])
@@ -555,7 +569,7 @@ for network_name in network_names:
         per_step.iloc[:, i].plot(color=plt.get_cmap("viridis")(this_step_proportion), ax=axes[0], legend=False)
 
     resnet_run_name = df_resnet.columns[0].split(" - ")[0]
-    df_resnet[f"{resnet_run_name} - {dataset_name}/00_episode_successes"].plot(color="C1", ax=axes[0], label="resnet")
+    (df_resnet[f"{resnet_run_name} - {dataset_name}/00_episode_successes"] * 100).plot(color="C1", ax=axes[0], label="resnet")
 
     (per_step.max(axis=1) - per_step[0]).plot(ax=axes[1])
 
@@ -563,9 +577,8 @@ for network_name in network_names:
     axes[1].grid(True)
 
     axes[1].set_xlabel("Environment steps, training")
-    y_label = dict(test_unfiltered="Test-unfiltered", valid_medium="Val-medium", hard="Hard")[dataset_name]
-    axes[0].set_ylabel(y_label + " solved")
-    axes[1].set_ylabel("Plan. Effect")
+    axes[0].set_ylabel(r"% solved")
+    axes[1].set_ylabel("Planning Effect")
     axes[0].legend(ncols=3, prop={"size": 8})
     axes[0].set_xlim((998400.0, 2002944000.0))
 
@@ -577,33 +590,39 @@ for network_name in network_names:
     print("success rate for resnet", dataset_name, ":", success_rates["resnet"])
     print("success rate for", network_name, dataset_name, ":", success_rates[network_name][0])
 
-
 # %%
 for network_name in ["drc33", "drc11"]:
-    episode_successes = [success_rates[network_name][step] for step in steps_to_think_all]
+    episode_successes = [100 * success_rates[network_name][step] for step in steps_to_think_all]
 
-    fig, ax1 = plt.subplots(figsize=(3.25, 2))
+    fig, ax1 = plt.subplots(figsize=(2.0, 1.6))
     ax1.grid(True)
-    ax1.set_xlabel("Number of extra thinking steps at episode start")
-    ax1.set_ylabel("Success Rate")
+    ax1.set_xlabel("Thinking steps")
+    ax1.set_ylabel(r"% solved")
     x_steps_to_think = np.array(steps_to_think_all)
+    with open(plots_dir / f"success_rate_{network_name}.pkl", "wb") as f:
+        pickle.dump((x_steps_to_think, episode_successes), f)
     ax1.plot(
         x_steps_to_think[: len(episode_successes)],
         episode_successes,
         color="C0",
-        label="DRC(1, 1)" if network_name == "drc11" else "DRC(3, 3)",
+        # label="DRC(1, 1)" if network_name == "drc11" else "DRC(3, 3)",
+        label="DRC",
     )
     ax1.tick_params(axis="y")
 
     x_min = 0.04
     x_max = 1 - x_min
 
-    ax1.axhline(success_rates["resnet"], color="C1", linestyle="dotted", label="ResNet")
+    ax1.axhline(100 * success_rates["resnet"], color="C1", linestyle="dotted", label="ResNet")
     ax1.set_xlim(x_steps_to_think[0], x_steps_to_think[-1])
     ax1.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, pos: "{0:g}".format(x)))
     ax1.xaxis.set_major_locator(ticker.FixedLocator(x_steps_to_think))
     ax1.get_xaxis().set_minor_formatter(matplotlib.ticker.NullFormatter())
     # ax1.legend(bbox_to_anchor=(1.1, 1.4, -0.1, -0.1), ncol=2)
+    # ax1.legend()
+
+    if network_name == "drc33":
+        ax1.set_yticks([60, 70, 80])
 
     plt.tight_layout()
     plt.savefig(plots_dir / f"success_vs_steps_to_think_{network_name}_{dataset_name}.pdf", format="pdf", bbox_inches="tight")
@@ -775,7 +794,8 @@ Unsolved, with worse returns & {unsolved_worse_pc:.2f} \\\\
 reward_for_placing_box = 0.9
 reward_for_placing_last_box = -0.1 + 1.0 + 10.0
 
-fig, axs = plt.subplots(1, 2, figsize=(3.3, 2), sharey=True, sharex=True)
+fig, axs = plt.subplots(1, 2, figsize=(3.6, 1.8), sharey=True, sharex=True)
+save_dict = {"steps_to_think": steps_to_think}
 for ax, condition_on_improved_levels in zip(axs, [False, True]):
     ax.grid(True)
     time_across_think_steps = []
@@ -799,6 +819,7 @@ for ax, condition_on_improved_levels in zip(axs, [False, True]):
         avg_time_box_placed.append(np.mean(time_for_placing_last_box))
         time_across_think_steps.append(avg_time_box_placed)
 
+    save_dict[f"time_across_think_steps_improved_{condition_on_improved_levels}"] = time_across_think_steps
     ax.plot(steps_to_think, time_across_think_steps)
     if condition_on_improved_levels:
         ax.set_yticks([10, 20, 30, 40, 50])
@@ -808,6 +829,10 @@ for ax, condition_on_improved_levels in zip(axs, [False, True]):
     else:
         ax.set_xlabel("(a) On all levels")
         ax.set_ylabel("Avg timesteps to place the box")
+
+with open(plots_dir / f"{dataset_name}_time_to_box.pkl", "wb") as f:
+    pickle.dump(save_dict, f)
+
 fig.text(0.55, -0.05, "Steps to think", ha="center")
 
 fig.legend(["B1", "B2", "B3", "B4"], bbox_to_anchor=(1.02, 1.2), ncol=4)
@@ -912,13 +937,17 @@ mean_cycle_start = np.mean(cycle_starts)
 median_cycle_start = np.median(cycle_starts)
 
 fig, axes = plt.subplots(1, 2, figsize=(3.7, 1.8))
-
+with open(plots_dir / f"{dataset_name}_cycle_starts.pkl", "wb") as f:
+    pickle.dump(cycle_starts, f)
 axes[0].hist(cycle_starts, bins=np.max(cycle_starts), density=True)
 axes[0].axvline(median_cycle_start, color="green", linestyle="dotted", label=f"Median: {int(median_cycle_start)}")
 axes[0].axvline(mean_cycle_start, color="red", linestyle="dotted", label=f"Mean: {mean_cycle_start:.1f}")
 axes[0].set_xlabel("Cycle start timestep")
 axes[0].set_ylabel("Density")
 axes[0].legend()
+
+with open(plots_dir / f"{dataset_name}_num_cycles_across_stt.pkl", "wb") as f:
+    pickle.dump((steps_to_think, num_cycles_across_stt), f)
 
 axes[1].plot(steps_to_think, num_cycles_across_stt)
 axes[1].grid(True)
@@ -954,6 +983,7 @@ def inside_range(number, range_start, range_end):
 
 
 found_in_next_n_steps = np.zeros(len(all_cycles), dtype=np.bool_)
+found_in_next_n_steps_base_rate = np.zeros(len(all_cycles), dtype=np.bool_)
 found_at_the_same_step = np.zeros(len(all_cycles), dtype=np.bool_)
 performance = 0
 baseline_performance = 0
@@ -988,6 +1018,14 @@ for cyc_idx, (lfi, li, cycle) in tqdm(enumerate(all_cycles), total=len(all_cycle
     new_cycles = get_cycles(metrics["episode_obs"], last_box_time_step)
     found_in_next_n_steps[cyc_idx] = any(inside_range(cyc[0], cycle[0], cycle[0] + cycle[1]) for cyc in new_cycles)
     found_at_the_same_step[cyc_idx] = cycle[0] in [cyc[0] for cyc in new_cycles]
+    # find the last cycle from the same level
+    end_cyc_idx, level_id = cyc_idx, (lfi, li)
+    while level_id == (lfi, li) and end_cyc_idx < len(all_cycles) - 1:
+        end_cyc_idx += 1
+        level_id = all_cycles[end_cyc_idx][:-1]
+    found_in_next_n_steps_base_rate[cyc_idx] = any(
+        inside_range(cyc[0], cycle[0] + cycle[1], cycle[0] + 2 * cycle[1]) for cyc in all_cycles[cyc_idx + 1 : end_cyc_idx]
+    )
 
     baseline_performance += all_episode_info[0]["episode_successes"][level_idx_to_serial_idx[(lfi, li)]]
     performance += metrics["episode_success"][0]
@@ -1003,6 +1041,7 @@ print(f"Total cycles & {len(all_cycles)} \\\\")
 print("\\midrule")
 print(f"Cycles at the end of thinking steps & {found_at_the_same_step.sum()/len(all_cycles) * 100:.2f}\\% \\\\")
 print(f"Cycles in the next N timesteps & {found_in_next_n_steps.sum()/len(all_cycles) * 100:.2f}\\% \\\\")
+print(f"Cycles in the next N timesteps (baseline) & {found_in_next_n_steps_base_rate.sum()/len(all_cycles) * 100:.2f}\\% \\\\")
 print()
 print(f"Performance: {performance * 100:.2f}%")
 print(f"Baseline Performance: {baseline_performance * 100:.2f}%")
@@ -1067,6 +1106,18 @@ print("% of same obs after cycle after", check_actions, "steps:", same_obs_after
 print("% of same obs on solved levels after", check_actions, "steps:", same_obs_after_cycle_solved[-1])
 
 x = np.arange(check_actions - 1) + 1
+with open(plots_dir / f"{dataset_name}_same_obs_after_cycle.pkl", "wb") as f:
+    pickle.dump(
+        {
+            "x": x,
+            "same_obs_after_cycle": same_obs_after_cycle,
+            "same_obs_acts_after_cycle": same_obs_acts_after_cycle,
+            "same_obs_after_cycle_solved": same_obs_after_cycle_solved,
+            "same_obs_acts_after_cycle_solved": same_obs_acts_after_cycle_solved,
+        },
+        f,
+    )
+
 plt.plot(x, same_obs_after_cycle[1:], label="Same state")
 # plt.plot(x, same_obs_acts_after_cycle[1:], label="Same state & action")
 plt.grid(True)
@@ -1241,14 +1292,20 @@ for i in range(len(all_episode_info[0]["episode_successes"])):
         levels_partition_by_think_steps[-1].append(i)
 
 
-x = [step for i, step in enumerate(steps_to_think) if len(levels_partition_by_think_steps[i]) > 10] + ["unsolved"]
+x = [
+    step
+    for i, step in enumerate(steps_to_think)
+    # if len(levels_partition_by_think_steps[i]) > 10
+] + ["unsolved"]
 avg_search_steps = [
     np.mean([all_search_steps[level_idx] for level_idx in partition])
     for partition in levels_partition_by_think_steps
-    if len(partition) > 10
+    # if len(partition) > 10
 ]
-fig, ax = plt.subplots()
+fig, ax = plt.subplots(figsize=(1.8, 1.8))
 ax.grid(True)
+with open(plots_dir / f"{dataset_name}_search_steps_v_steps_to_think.pkl", "wb") as f:
+    pickle.dump({"x": x, "avg_search_steps": avg_search_steps}, f)
 ax.plot(x, avg_search_steps)
 # ylabels 1000s to 1k
 ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, pos: f"{x/1000:.0f}k" if x > 0 else "0"))
@@ -1261,8 +1318,10 @@ plt.close()
 avg_opt_len = [
     np.mean([all_optimal_lengths[level_idx] for level_idx in partition])
     for partition in levels_partition_by_think_steps
-    if len(partition) > 10
+    # if len(partition) > 10
 ]
+with open(plots_dir / f"{dataset_name}_optimal_length_v_steps_to_think.pkl", "wb") as f:
+    pickle.dump({"x": x, "avg_opt_len": avg_opt_len}, f)
 fig, ax = plt.subplots()
 ax.grid(True)
 ax.plot(x, avg_opt_len)

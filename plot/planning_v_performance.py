@@ -66,7 +66,7 @@ plt.gcf().set_size_inches(6.5, 4)
 plt.xlabel("Baseline performance (%)")
 plt.ylabel("Planning effect (%)")
 plt.legend()
-plt.savefig("planning_v_performance_combined.png")
+plt.savefig("planning_v_performance_combined.pdf")
 plt.show()
 
 # scatter plots in subplots
@@ -78,5 +78,5 @@ for i, subset in enumerate(subsets):
 fig.supxlabel("Baseline performance (%)")
 fig.supylabel("Planning effect (%)")
 fig.tight_layout()
-plt.savefig("planning_v_performance_subplots.png")
+plt.savefig("planning_v_performance_subplots.pdf")
 plt.show()

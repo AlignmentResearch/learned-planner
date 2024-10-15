@@ -21,6 +21,7 @@ from typing import (
 )
 
 import gymnasium as gym
+import huggingface_hub
 import stable_baselines3.common.distributions
 import torch
 import torch.nn as nn
@@ -685,3 +686,16 @@ class MultiInputPolicyConfig(BasePolicyConfig):
 
     def policy_and_kwargs(self, vec_env: VecEnv) -> tuple[type[BasePolicy] | str, dict[str, Any]]:
         return self.policy, {}
+
+
+def download_policy_from_huggingface(local_or_hgf_repo_path: str) -> Path:
+    if not Path(local_or_hgf_repo_path).exists():
+        try:
+            local_path = huggingface_hub.snapshot_download(
+                "AlignmentResearch/learned-planner",
+                allow_patterns=[local_or_hgf_repo_path.rstrip("/") + "/*"],
+            )
+        except huggingface_hub.errors.HFValidationError:
+            raise ValueError(f"Model {local_or_hgf_repo_path} not found in local cache or on the hub")
+        return Path(local_path) / local_or_hgf_repo_path
+    return Path(local_or_hgf_repo_path)

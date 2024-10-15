@@ -1,4 +1,4 @@
-ARG PYTORCH_CUDA_VERSION=2.3.1-cuda12.1-cudnn8
+ARG PYTORCH_CUDA_VERSION=2.4.1-cuda12.1-cudnn8
 
 FROM pytorch/pytorch:${PYTORCH_CUDA_VERSION}-runtime as main-pre-pip
 
