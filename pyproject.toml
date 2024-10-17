@@ -126,7 +126,6 @@ dev = [
     "pytest-env ~=1.1.2",
 
     # launch jobs
-    "names_generator ~=0.1.0",
     "GitPython ~=3.1.41",
 ]
 
