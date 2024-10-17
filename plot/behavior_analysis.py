@@ -7,6 +7,7 @@ import os
 import pathlib
 import pickle
 import re
+from collections import defaultdict
 from functools import partial
 from typing import Any, Dict
 
@@ -441,6 +442,24 @@ dataset_name = difficulty if split is None else f"{split}_{difficulty}"
 steps_to_think_all = [0, 1, 2, 4, 6, 8, 10, 12, 16]
 episode_steps = 120
 
+TOTAL_LEVELS = defaultdict(lambda: 5000)  # setting an arbitrary upper limit
+TOTAL_LEVELS.update(
+    {
+        "test_unfiltered": 1000,
+        "valid_medium": 50000,
+        "hard": 3332,
+    }
+)
+
+NUM_ENVS = defaultdict(lambda: 500)
+NUM_ENVS.update(
+    {
+        "test_unfiltered": 100,
+        "valid_medium": 500,
+        "hard": 119,
+    }
+)
+
 
 def get_cfg():
     common_args = dict(
@@ -451,90 +470,26 @@ def get_cfg():
         difficulty=difficulty,
         seed=0,
     )
-    if not envpool:
+    total_levels = TOTAL_LEVELS[dataset_name] if args.num_levels == -1 else args.num_levels
+    if envpool:
+        common_args["load_sequentially"] = True
+        common_args["n_levels_to_load"] = TOTAL_LEVELS[dataset_name]
+        config_cls = EnvpoolBoxobanConfig
+    else:
         common_args["tinyworld_obs"] = True
         common_args["asynchronous"] = False
-        if dataset_name == "test_unfiltered":
-            return EvalConfig(
-                BoxobanConfig(
-                    num_envs=100,
-                    **common_args,
-                ),
-                n_episode_multiple=10  # only 1000 levels in unfil test set
-                if args.num_levels == -1
-                else np.ceil(args.num_levels / 100).astype(int).item(),
-                steps_to_think=steps_to_think_all,
-            )
-        elif dataset_name == "valid_medium":
-            return EvalConfig(
-                BoxobanConfig(
-                    num_envs=500,
-                    **common_args,
-                ),
-                n_episode_multiple=100 if args.num_levels == -1 else np.ceil(args.num_levels / 100).astype(int).item(),
-                steps_to_think=steps_to_think_all,
-            )
-        elif dataset_name == "hard":
-            return EvalConfig(
-                BoxobanConfig(
-                    num_envs=119,
-                    **common_args,
-                ),
-                n_episode_multiple=28 if args.num_levels == -1 else np.ceil(args.num_levels / 119).astype(int).item(),
-                steps_to_think=steps_to_think_all,
-            )
-        else:
-            return EvalConfig(
-                BoxobanConfig(
-                    num_envs=500,
-                    **common_args,
-                ),
-                n_episode_multiple=10 if args.num_levels == -1 else np.ceil(args.num_levels / 500).astype(int).item(),
-                steps_to_think=steps_to_think_all,
-            )
-    else:
-        common_args["load_sequentially"] = True
-        if dataset_name == "test_unfiltered":
-            return EvalConfig(
-                EnvpoolBoxobanConfig(
-                    num_envs=100,
-                    n_levels_to_load=1000,
-                    **common_args,
-                ),
-                n_episode_multiple=10  # only 1000 levels in unfil test set
-                if args.num_levels == -1
-                else np.ceil(args.num_levels / 100).astype(int).item(),
-                steps_to_think=steps_to_think_all,
-            )
-        elif dataset_name == "valid_medium":
-            return EvalConfig(
-                EnvpoolBoxobanConfig(
-                    num_envs=500,
-                    n_levels_to_load=50000,
-                    **common_args,
-                ),
-                n_episode_multiple=100 if args.num_levels == -1 else np.ceil(args.num_levels / 500).astype(int).item(),
-                steps_to_think=steps_to_think_all,
-            )
-        elif dataset_name == "hard":
-            return EvalConfig(
-                EnvpoolBoxobanConfig(
-                    num_envs=119,
-                    n_levels_to_load=3332,
-                    **common_args,
-                ),
-                n_episode_multiple=28 if args.num_levels == -1 else np.ceil(args.num_levels / 119).astype(int).item(),
-                steps_to_think=steps_to_think_all,
-            )
-        else:
-            return EvalConfig(
-                EnvpoolBoxobanConfig(
-                    num_envs=500,
-                    **common_args,
-                ),
-                n_episode_multiple=10 if args.num_levels == -1 else np.ceil(args.num_levels / 500).astype(int).item(),
-                steps_to_think=steps_to_think_all,
-            )
+        config_cls = BoxobanConfig
+
+    n_episodes_multiple = np.ceil(total_levels / NUM_ENVS[dataset_name]).astype(int).item()
+
+    return EvalConfig(
+        config_cls(
+            num_envs=NUM_ENVS[dataset_name],
+            **common_args,
+        ),
+        n_episode_multiple=n_episodes_multiple,
+        steps_to_think=steps_to_think_all,
+    )
 
 
 env_cfg = get_cfg()

@@ -3,7 +3,7 @@
 ![Learned Planner - Level18](https://github.com/user-attachments/assets/764939ec-1cb7-482d-a42d-72609aa76b23)
 
 
-This repository contains the evaluation and interpretability code for the paper "Planning behavior in a recurrent neural network that plays Sokoban", from the ICML 2024 Mechanistic Interpretability Workshop. ([OpenReview](https://openreview.net/forum?id=T9sB3S2hok)) ([arXiv](https://arxiv.org/abs/2407.15421))
+This repository contains the evaluation and interpretability code for the paper "Planning behavior in a recurrent neural network that plays Sokoban". ([OpenReview-ICML-MI-Workshop](https://openreview.net/forum?id=T9sB3S2hok)) ([arXiv](https://arxiv.org/abs/2407.15421))
 
 The [lp-training repository](https://github.com/AlignmentResearch/lp-training/) lets you train the neural networks on Sokoban. If you just want to train the DRC networks, you should go there.
 
@@ -20,6 +20,13 @@ We also provide a dockerfile for running the code:
 ```bash
 docker build -t learned-planner .
 docker run -it learned-planner
+```
+
+We install `jax[cpu]` by default. JAX is only used to obtain the cache in the `plot/behavior_analysis.py` script. To run the script on a GPU, you can install JAX on CUDA:
+
+```bash
+pip uninstall jax
+pip install jax[cuda]
 ```
 
 ### Optional dependency: Envpool
@@ -82,7 +89,7 @@ jax_policy, carry_t, jax_args, train_state, _ = cleanba_impala.load_train_state(
 
 The `jax_policy` loads the network using the JAX implementation of the DRC network in the [lp-training repository](https://github.com/AlignmentResearch/lp-training/).
 
-This repository provides the PyTorch implementation of the DRC network compatible with [MambaLens](https://github.com/Phylliida/MambaLens/) for doing interpretability research. You can load the model using the following code:
+This repository provides the PyTorch implementation of the DRC network compatible with [MambaLens](https://github.com/taufeeque9/MambaLens/) for doing interpretability research. You can load the model using the following code:
 
 ```python
 from learned_planner.interp.utils import load_jax_model_to_torch
@@ -92,13 +99,13 @@ cfg_th, policy_th = load_jax_model_to_torch(MODEL_PATH, env)
 
 ## Reproducing paper results
 
-The paper results can be reproduced using the `behavior_analysis.py` script:
+The behavioral results from the paper can be reproduced using the `behavior_analysis.py` script:
 
 ```bash
 python plot/behavior_analysis.py
 ```
 
-This script will generate the plots in the `plots` directory.
+The script uses CPU or GPU depending on the type of JAX library installed. See the installation section for more details. This script will generate the plots in the `{output_base_path}/{model_name}/plots` directory.
 
 The A* solutions for the [Boxoban levels](https://github.com/google-deepmind/boxoban-levels) can be found [here](https://huggingface.co/datasets/AlignmentResearch/boxoban-astar-solutions).
 
