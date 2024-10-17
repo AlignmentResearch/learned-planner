@@ -100,6 +100,7 @@ dependencies = [
     "farconf @ git+https://github.com/AlignmentResearch/farconf.git",
     "train_learned_planner @ git+https://github.com/AlignmentResearch/train-learned-planner.git",
     "mamba_lens @ git+https://github.com/taufeeque9/MambaLens.git",
+    "sae_lens @ git+https://github.com/AlignmentResearch/lp_sae.git",
 ]
 
 [project.optional-dependencies]
