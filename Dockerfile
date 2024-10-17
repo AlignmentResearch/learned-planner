@@ -65,7 +65,7 @@ WORKDIR "/workspace"
 FROM main-pre-pip as main
 
 # Install Envpool
-ENV ENVPOOL_WHEEL="https://github.com/AlignmentResearch/envpool/releases/download/v0.2.0/envpool-0.8.4-cp310-cp310-linux_x86_64.whl"
+ENV ENVPOOL_WHEEL="https://github.com/AlignmentResearch/envpool/releases/download/v0.3.0/envpool-0.8.4-cp311-cp311-linux_x86_64.whl"
 RUN pip install "${ENVPOOL_WHEEL}"
 
 # Copy whole repo and install

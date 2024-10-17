@@ -69,7 +69,11 @@ parser.add_argument(
 )
 parser.add_argument("--split", type=str, default="valid", choices=["valid", "test", ""])
 parser.add_argument("--difficulty", type=str, default="medium", choices=["unfiltered", "medium", "hard"])
-parser.add_argument("--use_envpool", action="store_true")
+parser.add_argument(
+    "--use_envpool",
+    action="store_true",
+    help="Use envpool for faster evaluation. Second part of the script doesn't work with envpool so don't use this flag for that part.",
+)
 parser.add_argument("--save_video", action="store_true")
 parser.add_argument(
     "--num_levels",
