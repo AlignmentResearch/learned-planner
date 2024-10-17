@@ -78,7 +78,7 @@ class TrainSAEConfig(ABCCommandConfig):
 
 def main(cfg: DRCSAERunnerConfig, run_dir: Path):
     _, policy_th = load_policy("drc33/bkynosqi/cp_2002944000/")
-    sparse_autoencoder = SAETrainingRunner(cfg, override_model=policy_th).run()
+    sparse_autoencoder = SAETrainingRunner(cfg, override_model=policy_th).run() # type: ignore
     return sparse_autoencoder
 
 
