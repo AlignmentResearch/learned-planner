@@ -57,7 +57,7 @@ exclude_lines = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["learned_planner*", "experiments", "plot"]
+include = ["learned_planner*", "experiments", "plot*"]
 
 [tool.setuptools.package-data]
 "*" = ["../.circleci/*.yml", "../k8s/*.yaml", "../plot/*.svg"]
