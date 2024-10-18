@@ -5,7 +5,7 @@ from farconf import config_diff, parse_cli, parse_cli_into_dict, to_dict
 from stable_baselines3.common.type_aliases import check_cast
 
 from learned_planner.configs.command_config import WandbCommandConfig
-from learned_planner.configs.train_drc import train_cluster_114
+from learned_planner.configs.train_drc import train_local_114
 from learned_planner.train import TrainConfig
 
 

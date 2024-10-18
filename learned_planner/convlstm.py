@@ -172,6 +172,13 @@ class ConvLSTMCell(nn.Module):
                 if pool_bias is not None:
                     nn.init.normal_(pool_bias, std=nn.init.calculate_gain("linear"))
 
+        self.hook_i = InputDependentHookPoint(input_dependent_postfixes)
+        self.hook_j = InputDependentHookPoint(input_dependent_postfixes)
+        self.hook_f = InputDependentHookPoint(input_dependent_postfixes)
+        self.hook_o = InputDependentHookPoint(input_dependent_postfixes)
+
+        self.hook_input_h = InputDependentHookPoint(input_dependent_postfixes)
+        self.hook_input_c = InputDependentHookPoint(input_dependent_postfixes)
         self.hook_h = InputDependentHookPoint(input_dependent_postfixes)
         self.hook_c = InputDependentHookPoint(input_dependent_postfixes)
         self.hook_layer_input = InputDependentHookPoint(input_dependent_postfixes)
@@ -216,7 +223,8 @@ class ConvLSTMCell(nn.Module):
         c_cur = c_cur.squeeze(0)
 
         postfix = make_postfix(pos, step)
-        h_cur, c_cur = self.hook_h(h_cur, postfix=postfix), self.hook_c(c_cur, postfix=postfix)
+
+        h_cur, c_cur = self.hook_input_h(h_cur, postfix), self.hook_input_c(c_cur, postfix)
         skip_input = self.hook_layer_input(skip_input, postfix)
         prev_layer_hidden = self.hook_prev_layer_hidden(prev_layer_hidden, postfix)
 
@@ -254,6 +262,7 @@ class ConvLSTMCell(nn.Module):
             o = th.tanh(cc_o)
         else:
             raise ValueError(f"Invalid {self.cfg.output_activation=}")
+        i, j, f, o = self.hook_i(i, postfix), self.hook_j(j, postfix), self.hook_f(f, postfix), self.hook_o(o, postfix)
 
         c_next = f * c_cur + i * j
         h_next = o * th.tanh(c_next)

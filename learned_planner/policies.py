@@ -21,6 +21,7 @@ from typing import (
 )
 
 import gymnasium as gym
+import huggingface_hub
 import stable_baselines3.common.distributions
 import torch
 import torch.nn as nn
@@ -685,3 +686,24 @@ class MultiInputPolicyConfig(BasePolicyConfig):
 
     def policy_and_kwargs(self, vec_env: VecEnv) -> tuple[type[BasePolicy] | str, dict[str, Any]]:
         return self.policy, {}
+
+
+def download_policy_from_huggingface(local_or_hgf_repo_path: str | Path, force_download: bool = False) -> Path:
+    local_or_hgf_repo_path = Path(local_or_hgf_repo_path)
+    if not local_or_hgf_repo_path.exists():
+        try:
+            local_path = huggingface_hub.snapshot_download(
+                "AlignmentResearch/learned-planner",
+                allow_patterns=[str(local_or_hgf_repo_path) + "*"],
+                force_download=force_download,
+            )
+            local_or_hgf_repo_path = Path(local_path) / local_or_hgf_repo_path
+            if not local_or_hgf_repo_path.exists():
+                raise FileNotFoundError(f"Model {local_or_hgf_repo_path} not found in local cache or on the hub")
+        except (huggingface_hub.errors.HFValidationError, FileNotFoundError):
+            print("Retrying with force_download=True")
+            if not force_download:
+                return download_policy_from_huggingface(local_or_hgf_repo_path, force_download=True)
+            raise ValueError(f"Model {local_or_hgf_repo_path} not found in local cache or on the hub")
+        
+    return local_or_hgf_repo_path

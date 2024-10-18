@@ -8,7 +8,7 @@ exclude = ["third_party"]
 
 [tool.ruff]
 line-length = 127
-target-version = "py310"
+target-version = "py311"
 exclude = ["third_party"]
 
 [tool.ruff.isort]
@@ -25,7 +25,8 @@ testpaths = ["tests"]  # ignore third_party dir for now
 exclude = [
     "learned_planner/notebooks/create_hard_reward.py",
     "learned_planner/notebooks/plot_planning.py",
-    "plot/behavior_analysis.py",
+    "plot/**",
+    "alternative-levels/**",
     "wandb/**",  # Saved old codes
     "third_party/**",  # Other libraries
     "build/**", # build directory for strict editable install
@@ -56,17 +57,17 @@ exclude_lines = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["learned_planner*", "experiments"]
+include = ["learned_planner*", "experiments", "plot*"]
 
 [tool.setuptools.package-data]
-"*" = ["../.circleci/*.yml", "../k8s/*.yaml"]
+"*" = ["../.circleci/*.yml", "../k8s/*.yaml", "../plot/*.svg", "../tests/probes_dataset/*.pkl"]
 
 [project]
 name = "learned-planner"
 version = "0.1.0"
 description = "Planning behavior in RNNs that plays Sokoban."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = {file = "LICENSE.txt"}
 keywords = []
 
@@ -80,31 +81,30 @@ maintainers = []
 classifiers = []
 
 dependencies = [
-    "accelerate ~=0.32.1",
-    "matplotlib ==3.9.0",
     "gymnasium ~= 0.29.0",
     "wandb ~=0.17.4",
     "moviepy ~=1.0.3",
     "shimmy ~=1.1.0",  # match version in dev
     "optree ~= 0.10.0",
+    "plotly",
     # Freeze the numpy version so OpenBLAS numpy gets installed with pip. Conda-default MKL numpy causes errors when
     # running SubprocessVecEnv on the EPYC machines of Flamingo.
     "numpy ==1.26.4",
     "scikit-learn ~=1.4.0",
     "cairosvg ~=2.7.1",
+    "transformer-lens ~=2.4.0",
     "names-generator ~=0.2.0",
-    "torchvision ~=0.18.1",
+    "torch ~=2.4.1",
+    "torchvision ~=0.19.1",
     "stable_baselines3 @ git+https://github.com/AlignmentResearch/learned-planners-stable-baselines3.git",
     "gym_sokoban @ git+https://github.com/AlignmentResearch/gym-sokoban.git",
     "farconf @ git+https://github.com/AlignmentResearch/farconf.git",
-    "lp_cleanba @ git+https://github.com/AlignmentResearch/lp-cleanba.git@ef059c3d7e1d22515cc9d18e5927dc49db60cf1c",
-    "mamba_lens @ git+https://github.com/Phylliida/MambaLens.git",    
+    "train_learned_planner @ git+https://github.com/AlignmentResearch/train-learned-planner.git",
+    "mamba_lens @ git+https://github.com/taufeeque9/MambaLens.git",
+    "sae_lens @ git+https://github.com/AlignmentResearch/lp_sae.git",
 ]
 
 [project.optional-dependencies]
-torch = [
-    "torch ==2.3.1",
-]
 dev = [
     # local development
     "pre-commit ~=3.6.0",
@@ -119,9 +119,13 @@ dev = [
     "mypy ~=1.9.0",
 
     # run tests
-    "pytest ~=8.1.1",
+    "pytest ~=8.1.2",
     "pytest-cov >=4,<5",
-    "pytest-env ~=1.1.2",
+    "pytest-env ~=1.1.3",
+    "pytest-profiling ==1.7.0",
+
+    # launch jobs
+    "GitPython ~=3.1.41",
 ]
 
 [project.urls]

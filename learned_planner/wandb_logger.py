@@ -55,7 +55,7 @@ class WandBOutputFormat(KVWriter):
                     _add_to_log_dict(key, value)
 
             if isinstance(value, th.Tensor):
-                _add_to_log_dict(key, wandb.Histogram(value.cpu().numpy()))
+                _add_to_log_dict(key, wandb.Histogram(value.cpu().numpy()))  # type: ignore
 
             if isinstance(value, Video):
                 _add_to_log_dict(key, wandb.Video(value.frames.cpu().numpy(), fps=int(value.fps)))
