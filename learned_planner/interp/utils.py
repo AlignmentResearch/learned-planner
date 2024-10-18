@@ -170,16 +170,18 @@ def get_boxoban_cfg(
     difficulty: str = "medium",
     split: str = "valid",
     load_sequentially_envpool=True,
+    use_envpool=False,
+    boxoban_cache=BOXOBAN_CACHE,
     **kwargs,
 ):
-    if ON_CLUSTER:
+    if ON_CLUSTER or use_envpool:
         cfg_cls = EnvpoolBoxobanConfig
         extra_kwargs: dict[str, Any] = dict(load_sequentially=load_sequentially_envpool, **kwargs)
     else:
         cfg_cls = BoxobanConfig
         extra_kwargs: dict[str, Any] = dict(asynchronous=False, tinyworld_obs=True, **kwargs)
     return cfg_cls(
-        cache_path=BOXOBAN_CACHE,
+        cache_path=boxoban_cache,
         num_envs=num_envs,
         max_episode_steps=episode_steps,
         min_episode_steps=episode_steps,
@@ -209,7 +211,8 @@ def load_probe(path: str | pathlib.Path = "", wandb_id: str = ""):
         path = subprocess.run(command, shell=True, capture_output=True, text=True).stdout
         path = path.strip()
 
-    if not (path and pathlib.Path(path).exists()):
+    path = download_policy_from_huggingface(path)  # returns same path if it exists or else tries to download from huggingface
+    if not path.exists():
         raise FileNotFoundError(f"Probe file not found at {path}")
 
     with open(path, "rb") as f:

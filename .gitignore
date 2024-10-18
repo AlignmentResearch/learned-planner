@@ -163,3 +163,5 @@ cython_debug/
 /.vs/learned-planner/FileContentIndex
 /.vs/learned-planner/v17
 /.vs
+
+training/**

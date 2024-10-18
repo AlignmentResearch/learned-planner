@@ -1,5 +1,4 @@
 import argparse
-import os
 import pathlib
 import pickle
 
@@ -11,20 +10,13 @@ from scipy.stats import bootstrap
 from sklearn.multioutput import MultiOutputClassifier
 
 import learned_planner.interp.plot  # noqa
+from learned_planner import MODEL_PATH_IN_REPO, ON_CLUSTER
 from learned_planner.interp.collect_dataset import DatasetStore
 from learned_planner.interp.train_probes import TrainOn
 from learned_planner.interp.utils import get_boxoban_cfg, load_jax_model_to_torch, load_probe, play_level
 from learned_planner.policies import download_policy_from_huggingface
 
-on_cluster = os.path.exists("/training")
-LP_DIR = pathlib.Path(__file__).parent.parent.parent
-
-MODEL_PATH_IN_REPO = "drc33/bkynosqi/cp_2002944000/"  # DRC(3, 3) 2B checkpoint
 MODEL_PATH = download_policy_from_huggingface(MODEL_PATH_IN_REPO)
-if on_cluster:
-    BOXOBAN_CACHE = pathlib.Path("/training/.sokoban_cache/")
-else:
-    BOXOBAN_CACHE = pathlib.Path(__file__).parent.parent.parent / "training/.sokoban_cache/"
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--difficulty", type=str, default="medium")
@@ -32,9 +24,15 @@ parser.add_argument("--split", type=str, default="valid")
 parser.add_argument("--thinking_steps", type=int, default=6)
 parser.add_argument("--num_levels", type=int, default=1000)
 parser.add_argument("--num_envs", type=int, default=100)
-parser.add_argument("--probe_path", type=str, default="")
-parser.add_argument("--probe_wandb_id", type=str, default="vb6474rg")
+parser.add_argument(
+    "--probe_path",
+    type=str,
+    default="probes/best/boxes_future_direction_map_l-all.pkl",
+    help="Path of the probe on disk or on learned-planner huggingface repo",
+)
+parser.add_argument("--probe_wandb_id", type=str, default="")
 parser.add_argument("--dataset_name", type=str, default="boxes_future_direction_map")
+parser.add_argument("--output_base_path", type=str, default="iclr_logs/plan_recall/", help="Path to save plots and cache.")
 
 args = parser.parse_args()
 difficulty = args.difficulty
@@ -92,11 +90,12 @@ def plan_predictions(policy_th=policy_th, probes=probes, probe_infos=probe_infos
     all_preds = np.transpose(all_preds, (1, 0, 2, 3))
     return all_preds, all_labels
 
-
-save_dir = pathlib.Path("/training/iclr_logs/") if on_cluster else LP_DIR / "plot/interp/"
-save_dir = save_dir / f"plan_predictions/{args.dataset_name}/{difficulty}_{split}/"
+if ON_CLUSTER:
+    args.output_base_path = pathlib.Path("/training/") / args.output_base_path
+args.output_base_path = pathlib.Path(args.output_base_path)
+save_dir = args.output_base_path / f"{args.dataset_name}/{difficulty}_{split}/"
 (save_dir / "plots").mkdir(parents=True, exist_ok=True)
-if on_cluster and (save_dir / f"all_preds_{num_levels}.npy").exists():
+if ON_CLUSTER and (save_dir / f"all_preds_{num_levels}.npy").exists():
     print("Loading from cache")
     all_preds = np.load(save_dir / f"all_preds_{num_levels}.npy")
     all_labels = np.load(save_dir / f"all_labels_{num_levels}.npy")

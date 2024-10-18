@@ -19,7 +19,7 @@ for layer in range(-1, 3):
             config.cmd.sklearn_solver = "saga"
             config.cmd.sklearn_n_jobs = 4
             config.cmd.weight_decay = 1
-            config.cmd.dataset_path = Path("/training/activations_dataset/hard/0ts_agent_in_a_cycle_5000_balance.pt")
+            config.cmd.dataset_path = Path("/training/activations_dataset/hard/agent_in_a_cycle_5000_balance.pt")
             return config
 
         cli, _ = update_fns_to_cli(train_local, update)

@@ -9,7 +9,7 @@ from learned_planner.interp.train_probes import TrainProbeConfig
 from learned_planner.launcher import FlamingoRun, group_from_fname, launch_jobs
 
 dataset_path = Path(
-    "/training/activations_dataset/hard/0ts_alternative_boxes_direction_map_20000_skip5_gridwise_multioutput.pt"
+    "/training/activations_dataset/hard/alternative_boxes_direction_map_20000_skip5_gridwise_multioutput.pt"
 )
 
 clis: list[list[str]] = []

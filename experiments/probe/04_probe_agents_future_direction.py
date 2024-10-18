@@ -8,7 +8,7 @@ from learned_planner.configs.train_probe import train_local
 from learned_planner.interp.train_probes import TrainProbeConfig
 from learned_planner.launcher import FlamingoRun, group_from_fname, launch_jobs
 
-dataset_path = Path("/training/activations_dataset/hard/0ts_agents_future_direction_map_20000_skip5.pt")
+dataset_path = Path("/training/activations_dataset/hard/agents_future_direction_map_20000_skip5.pt")
 
 clis: list[list[str]] = []
 for layer in range(-1, 3):

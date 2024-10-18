@@ -8,7 +8,7 @@ from learned_planner.configs.train_probe import train_local
 from learned_planner.interp.train_probes import TrainProbeConfig
 from learned_planner.launcher import FlamingoRun, group_from_fname, launch_jobs
 
-dataset_path = "/training/activations_dataset/hard/0ts_actions_for_probe_{action}_20000_skip0.pt"
+dataset_path = "/training/activations_dataset/hard/actions_for_probe_{action}_20000_skip0.pt"
 
 clis: list[list[str]] = []
 for action in range(4):

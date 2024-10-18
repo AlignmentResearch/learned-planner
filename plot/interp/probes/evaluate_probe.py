@@ -1,23 +1,21 @@
 import argparse
 import glob
 import multiprocessing
-import os
 import pathlib
 import warnings
+from functools import partial
 
 import numpy as np
 from scipy.stats import bootstrap
 from sklearn.multioutput import MultiOutputClassifier
 
+from learned_planner import ON_CLUSTER
 from learned_planner.interp.collect_dataset import DatasetStore
 from learned_planner.interp.train_probes import TrainOn
 from learned_planner.interp.utils import get_metrics, load_probe, predict
 
-on_cluster = os.path.exists("/training")
-LP_DIR = pathlib.Path(__file__).parent.parent.parent
 
-
-def process_file(file):
+def process_file(file, probe, probe_info, keys, multioutput):
     with warnings.catch_warnings(action="ignore"):
         ds = DatasetStore.load(file)
     if "direction" in probe_info.dataset_name:
@@ -39,13 +37,17 @@ def process_file(file):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset_path", type=str, default="/training/activations_dataset/valid_medium/0_think_step/")
-    parser.add_argument("--probe_path", type=str, default="")
+    parser.add_argument("--probe_path", type=str, default="probes/best/boxes_future_direction_map_l-all.pkl")
     parser.add_argument("--probe_wandb_id", type=str, default="")
     parser.add_argument("--dataset_name", type=str, default="boxes_future_direction_map")
     parser.add_argument("--layer", type=int, default=-1)
     parser.add_argument("--hooks", type=str, default="hook_h,hook_c")
     parser.add_argument("--num_levels", type=int, default=1000)
+    parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--all", action="store_true", help="Show all metrics.")
+    parser.add_argument(
+        "--output_base_path", type=str, default="iclr_logs/evaluate_probe/", help="Path to save plots and cache."
+    )
 
     args = parser.parse_args()
 
@@ -62,17 +64,21 @@ if __name__ == "__main__":
     all_gts = []
     keys = [f"features_extractor.cell_list.{layer}.{hook}" for layer in layers for hook in probe_info.hooks]
     files = glob.glob(str(dataset_path / "*.pkl"))[: args.num_levels]
+    print("Number of files:", len(files))
 
-    save_dir = pathlib.Path("/training/iclr_logs/") if on_cluster else LP_DIR / "plot/interp/"
-    save_dir = save_dir / "evaluate_probe" / args.dataset_name / args.probe_wandb_id
+    if ON_CLUSTER:
+        args.output_base_path = pathlib.Path("/training/") / args.output_base_path
+    args.output_base_path = pathlib.Path(args.output_base_path)
+    save_dir = args.output_base_path / args.dataset_name / args.probe_wandb_id
     save_dir.mkdir(parents=True, exist_ok=True)
 
     if (save_dir / "probe_preds.npy").exists():
         probe_preds = np.load(save_dir / "probe_preds.npy")
         gts = np.load(save_dir / "gts.npy")
     else:
-        with multiprocessing.Pool(8) as pool:
-            results = list(pool.imap(process_file, files))
+        with multiprocessing.Pool(args.num_workers) as pool:
+            map_fn = partial(process_file, probe=probe, probe_info=probe_info, keys=keys, multioutput=multioutput)
+            results = list(pool.imap(map_fn, files))
         probe_preds = np.concatenate([r[0] for r in results if len(r[0]) > 0])
         gts = np.concatenate([r[1] for r in results if len(r[0]) > 0])
         np.save(save_dir / "probe_preds.npy", probe_preds)

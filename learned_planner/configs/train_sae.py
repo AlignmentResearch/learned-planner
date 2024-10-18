@@ -23,7 +23,7 @@ def train_sae(
             expansion_factor=32,
             activation_fn="topk",
             topk=8,
-            l1_coefficient=0,
+            l1_coefficient=1e-20,  # 0 raises division by zero error.
             lp_norm=1.0,
             scale_sparsity_penalty_by_decoder_norm=False,
             # Learning Rate

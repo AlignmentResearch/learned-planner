@@ -53,7 +53,7 @@ Probes and SAEs trained on the DRC(3, 3) model are available at the same [huggin
 
 ## Loading the model
 
-First, you will need to clone the Boxoban levels. We assume that the levels are stored in the `training/.sokoban_cache` directory. If you want to change the path to the directory, you can set a new path in the `learned_planners/__init__.py` file. You can clone the levels using the following commands:
+First, you will need to clone the Boxoban levels. We assume that the levels are stored in the `training/.sokoban_cache` directory. If you want to change the path to the directory, you can set a new path in the `learned_planner/__init__.py` file. You can clone the levels using the following commands:
 
 ```
 BOXOBAN_CACHE="training/.sokoban_cache"  # change if desired
@@ -70,8 +70,8 @@ import os
 
 from cleanba import cleanba_impala
 
-from learned_planners.policies import download_policy_from_huggingface
-from learned_planners.interp.utils import get_boxoban_cfg
+from learned_planner.policies import download_policy_from_huggingface
+from learned_planner.interp.utils import get_boxoban_cfg
 
 MODEL_PATH_IN_REPO = "drc33/bkynosqi/cp_2002944000/" # DRC(3, 3) 2B checkpoint
 MODEL_PATH = download_policy_from_huggingface(MODEL_PATH_IN_REPO)
@@ -106,18 +106,18 @@ The A* solutions for the [Boxoban levels](https://github.com/google-deepmind/box
 
 ### Collecting the activations
 
-For training the probes, we first need to generate the dataset of model activations. The `learned_planners/interp/collect_dataset.py` script can be used to cache the activations. Activations of each level are stored in a separate pickle object of the class `learned_planners.interp.collect_dataset.DatasetStore`. The `DatasetStore` The script uses the [DRC(3, 3)](https://huggingface.co/AlignmentResearch/learned-planner/tree/main/drc33/bkynosqi/cp_2002944000) model by default. See the script for additional options.
+For training the probes, we first need to generate the dataset of model activations. The `learned_planner/interp/collect_dataset.py` script can be used to cache the activations. Activations of each level are stored in a separate pickle object of the class `learned_planner.interp.collect_dataset.DatasetStore`. The `DatasetStore` The script uses the [DRC(3, 3)](https://huggingface.co/AlignmentResearch/learned-planner/tree/main/drc33/bkynosqi/cp_2002944000) model by default. See the script for additional options.
 
 ```bash
-python learned_planners/interp/collect_dataset.py --boxoban_cache {BOXOBAN_CACHE} --output_path {activation_cache_path}
+python learned_planner/interp/collect_dataset.py --boxoban_cache {BOXOBAN_CACHE} --output_path {activation_cache_path}
 ```
 
 ### Creating the dataset for the probes
 
-The `learned_planners/interp/save_ds.py` script takes the activations path using `--dataset_path` and `--labels_type` to create the dataset for the probe with the specified type and saves the torch dataset `learned_planners.interp.train_probes.ActivationsDataset` in the same dataset path. See the script for additional options.
+The `learned_planner/interp/save_ds.py` script takes the activations path using `--dataset_path` and `--labels_type` to create the dataset for the probe with the specified type and saves the torch dataset `learned_planner.interp.train_probes.ActivationsDataset` in the same dataset path. See the script for additional options.
 
 ```bash
-python learned_planners/interp/save_ds.py --dataset_path {activation_cache_path} --labels_type {labels_type}
+python learned_planner/interp/save_ds.py --dataset_path {activation_cache_path} --labels_type {labels_type}
 ```
 
 ### Training the probes or SAEs

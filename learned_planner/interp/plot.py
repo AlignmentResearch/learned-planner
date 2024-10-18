@@ -493,7 +493,7 @@ def save_video_sae(
     return full_path
 
 
-def plotly_feature_vis(feature_acts, obs, feature_labels):
+def plotly_feature_vis(feature_acts, obs, feature_labels, show=False):
     """Feature activations visualized with observations along with time slider.
 
     Args:
@@ -515,4 +515,6 @@ def plotly_feature_vis(feature_acts, obs, feature_labels):
         binary_string=True,
     )
     fig.for_each_annotation(lambda a: a.update(text=labels[int(a.text.split("=")[-1])]))
-    fig.show()
+    if show:
+        fig.show()
+    return fig

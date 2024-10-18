@@ -1,31 +1,22 @@
 import argparse
 import multiprocessing
-import os
 import pathlib
 from functools import partial
 
 import numpy as np
 import pandas as pd
 import torch as th
-from cleanba.environments import BoxobanConfig
 from sklearn.multioutput import MultiOutputClassifier
 from tqdm import tqdm
 
+from learned_planner import BOXOBAN_CACHE, MODEL_PATH_IN_REPO, ON_CLUSTER
 from learned_planner.interp.collect_dataset import DatasetStore
+from learned_planner.interp.plot import save_video as save_video_fn
 from learned_planner.interp.train_probes import TrainOn
-from learned_planner.interp.utils import load_jax_model_to_torch, load_probe, play_level
-from learned_planner.interp.utils import save_video as save_video_fn
+from learned_planner.interp.utils import get_boxoban_cfg, load_jax_model_to_torch, load_probe, play_level
 from learned_planner.policies import download_policy_from_huggingface
 
-on_cluster = os.path.exists("/training")
-
-MODEL_PATH_IN_REPO = "drc33/bkynosqi/cp_2002944000/"  # DRC(3, 3) 2B checkpoint
 MODEL_PATH = download_policy_from_huggingface(MODEL_PATH_IN_REPO)
-LP_DIR = pathlib.Path.cwd().parent.parent
-if on_cluster:
-    BOXOBAN_CACHE = pathlib.Path("/training/.sokoban_cache/")
-else:
-    BOXOBAN_CACHE = LP_DIR / "training/.sokoban_cache/"
 
 
 def patch_in_box_direction(cache, hook, layer, h_or_c, coef_from_my_map, alpha, probe_info, n_segments, per_segment_neurons):
@@ -180,7 +171,7 @@ def ci_score_on_a_level(
     all_ci_outputs = np.array(all_ci_outputs, dtype=int)
     if len(all_ci_outputs) > 0:
         mean_ci_success = all_ci_outputs[:, -1].mean()
-        all_ci_outputs = all_ci_outputs.reshape(-1, 5)
+        all_ci_outputs = all_ci_outputs.reshape(-1, 9)
     else:
         mean_ci_success = "NA"
     print("Level:", (lfi, li), "Mean ci success:", mean_ci_success, "Total:", len(all_ci_outputs))
@@ -226,8 +217,13 @@ def get_coef(probe, probe_info, multioutput):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--probe_path", type=str, default="")
-    parser.add_argument("--probe_wandb_id", type=str, default="vb6474rg")
+    parser.add_argument(
+        "--probe_path",
+        type=str,
+        default="probes/best/boxes_future_direction_map_l-all.pkl",
+        help="Path of the probe on disk or on learned-planner huggingface repo",
+    )
+    parser.add_argument("--probe_wandb_id", type=str, default="")
     parser.add_argument("--dataset_name", type=str, default="boxes_future_direction_map")
     parser.add_argument("--layer", type=int, default=-1)
     parser.add_argument("--hooks", type=str, default="hook_h,hook_c")
@@ -239,9 +235,7 @@ if __name__ == "__main__":
     parser.add_argument("--save_video", action="store_true", help="save video")
     parser.add_argument("--num_workers", type=int, default=4, help="number of workers")
     parser.add_argument("--seed", type=int, default=0, help="seed")
-    parser.add_argument(
-        "--output_base_path", type=str, default="/training/iclr_logs/ci_score/", help="Path to save plots and cache."
-    )
+    parser.add_argument("--output_base_path", type=str, default="iclr_logs/ci_score/", help="Path to save plots and cache.")
     parser.add_argument("--logits", type=str, default="15,20,25,30", help="logits to try")
     args = parser.parse_args()
 
@@ -255,21 +249,14 @@ if __name__ == "__main__":
     difficulty = args.difficulty
     logits = [int(logit) for logit in args.logits.split(",")]
 
-    boxo_cfg = BoxobanConfig(
-        cache_path=BOXOBAN_CACHE,
-        num_envs=1,
-        max_episode_steps=80,
-        min_episode_steps=80,
-        asynchronous=False,
-        tinyworld_obs=True,
+    boxo_cfg = get_boxoban_cfg(
         difficulty=difficulty,
         split=split if args.split != "None" and args.split != "" else None,
     )
 
-    if on_cluster:
-        args.output_base_path = pathlib.Path(args.output_base_path) / f"{split}_{difficulty}"
-    else:
-        args.output_base_path = LP_DIR / args.output_base_path.lstrip("/") / f"{split}_{difficulty}"
+    if ON_CLUSTER:
+        args.output_base_path = pathlib.Path("/training/") / args.output_base_path
+    args.output_base_path = pathlib.Path(args.output_base_path) / dataset_name / f"{split}_{difficulty}"
     args.output_base_path.mkdir(parents=True, exist_ok=True)
 
     map_fn = partial(
@@ -307,7 +294,7 @@ if __name__ == "__main__":
         else:
             results = [map_fn(lfi_li) for lfi_li in tqdm(lfi_li_list)]
         results = np.concatenate(results)
-        file_name = f"{split}_{difficulty}/ci_results.csv"
+        file_name = "ci_results.csv"
     df = pd.DataFrame(
         results,
         columns=["lfi", "li", "i", "j", "next_to_wall", "direction_idx", "ci_direction", "logit", "ci_success"],

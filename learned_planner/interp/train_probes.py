@@ -115,6 +115,8 @@ class ActivationsDataset(Dataset):
             self.level_files = self.level_files[:train_files]
         else:
             self.level_files = self.level_files[train_files:]
+            if len(self.level_files) == 0: # use train files if no test files (useful for testing)
+                self.level_files = sum((glob(str(p / "*.pkl")) for p in self.dataset_path), [])
             if num_data_points is not None:
                 num_data_points = num_data_points // 4
         self.n_layers = 3

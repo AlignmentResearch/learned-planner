@@ -1,3 +1,4 @@
+import subprocess
 import sys
 from functools import partial
 from pathlib import Path
@@ -12,9 +13,9 @@ import torch as th
 import wandb  # noqa: F401  # pyright: ignore
 from cleanba import cleanba_impala
 from farconf import update_fns_to_cli
-from huggingface_hub import snapshot_download
 from stable_baselines3.common.type_aliases import check_cast
 
+from learned_planner import LP_DIR, MODEL_PATH_IN_REPO
 from learned_planner.__main__ import main
 from learned_planner.configs.command_config import WandbCommandConfig
 from learned_planner.configs.train_drc import DeviceLiteral
@@ -25,16 +26,13 @@ from learned_planner.interp import train_probes
 from learned_planner.interp.collect_dataset import DatasetStore
 from learned_planner.interp.plot import save_video
 from learned_planner.interp.utils import jax_to_th, load_jax_model_to_torch
+from learned_planner.policies import download_policy_from_huggingface
 
 # when running the test using pytest, the DatasetStore class is not available in the main module
 # and pickle.load searches for it in the main module. So we need to set it manually
 setattr(sys.modules["__main__"], "DatasetStore", DatasetStore)
 
-MODEL_PATH_IN_REPO = "drc33/bkynosqi/cp_2002944000/"
-MODEL_BASE_PATH = Path(
-    snapshot_download("AlignmentResearch/learned-planner", allow_patterns=[MODEL_PATH_IN_REPO + "*"]),
-)
-MODEL_PATH = MODEL_BASE_PATH / MODEL_PATH_IN_REPO
+MODEL_PATH = download_policy_from_huggingface(MODEL_PATH_IN_REPO)
 
 
 @pytest.fixture
@@ -145,6 +143,12 @@ def test_train_probe(
     train_fn: Callable[[], WandbCommandConfig],
     device: Literal["cpu", "cuda"],
 ):
+    # save dataset python save_ds.py --dataset_path ./ --labels_type pred_value --num_datapoints 5
+    script_path = LP_DIR / "learned_planner/interp/save_ds.py"
+    acts_path = Path(__file__).parent / "probes_dataset"
+    cmd = f"python {script_path} --dataset_path {acts_path} --labels_type pred_value --num_datapoints 5 --for_test"
+    subprocess.run(cmd, shell=True, check=True)
+    
     def _update_train_fn(cfg: WandbCommandConfig, device: DeviceLiteral, training_mount: Path) -> WandbCommandConfig:
         cfg.base_save_prefix = training_mount
         cfg.cmd = check_cast(train_probes.TrainProbeConfig, cfg.cmd)
@@ -154,7 +158,7 @@ def test_train_probe(
         cfg.cmd.eval_difficulty = "unfiltered"
         cfg.cmd.batch_size = 5
         cfg.cmd.eval_episodes = 1
-        cfg.cmd.dataset_path = Path(__file__).parent / "probes_dataset/8ts_pred_value_5.pt"
+        cfg.cmd.dataset_path = Path(__file__).parent / "probes_dataset/pred_value_5_skip5.pt"
         cfg.cmd.train_on.dataset_name = "pred_value"
         cfg.cmd.policy_path = str(MODEL_PATH)
         cfg.cmd.train_on.mean_pool_grid = True
