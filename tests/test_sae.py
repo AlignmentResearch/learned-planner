@@ -32,6 +32,7 @@ def test_train_sae(
     device: Literal["cpu", "cuda"],
 ):
     wandb.init(mode="disabled")
+
     def _update_train_fn(cfg: WandbCommandConfig, device: DeviceLiteral, training_mount: Path) -> WandbCommandConfig:
         cfg.base_save_prefix = training_mount
         cfg.cmd = check_cast(train_sae.TrainSAEConfig, cfg.cmd)
