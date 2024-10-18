@@ -64,7 +64,7 @@ if __name__ == "__main__":
     all_gts = []
     keys = [f"features_extractor.cell_list.{layer}.{hook}" for layer in layers for hook in probe_info.hooks]
     files = glob.glob(str(dataset_path / "*.pkl"))[: args.num_levels]
-    print("Number of files:", len(files))
+    assert len(files) > 0, f"No pkl files found in {dataset_path}"
 
     if ON_CLUSTER:
         args.output_base_path = pathlib.Path("/training/") / args.output_base_path

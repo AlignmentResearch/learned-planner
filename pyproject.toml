@@ -60,7 +60,7 @@ exclude_lines = [
 include = ["learned_planner*", "experiments", "plot*"]
 
 [tool.setuptools.package-data]
-"*" = ["../.circleci/*.yml", "../k8s/*.yaml", "../plot/*.svg"]
+"*" = ["../.circleci/*.yml", "../k8s/*.yaml", "../plot/*.svg", "../tests/probes_dataset/*.pkl"]
 
 [project]
 name = "learned-planner"

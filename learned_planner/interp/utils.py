@@ -170,11 +170,11 @@ def get_boxoban_cfg(
     difficulty: str = "medium",
     split: str = "valid",
     load_sequentially_envpool=True,
-    use_envpool=False,
+    use_envpool: Optional[bool] = None,
     boxoban_cache=BOXOBAN_CACHE,
     **kwargs,
 ):
-    if ON_CLUSTER or use_envpool:
+    if use_envpool or (use_envpool is None and ON_CLUSTER):
         cfg_cls = EnvpoolBoxobanConfig
         extra_kwargs: dict[str, Any] = dict(load_sequentially=load_sequentially_envpool, **kwargs)
     else:

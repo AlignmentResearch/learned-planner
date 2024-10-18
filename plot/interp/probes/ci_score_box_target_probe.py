@@ -263,6 +263,7 @@ if __name__ == "__main__":
     boxo_cfg = get_boxoban_cfg(
         difficulty=difficulty,
         split=split if args.split != "None" and args.split != "" else None,
+        use_envpool=False,  # envpool doesn't support options on reset
     )
     if ON_CLUSTER:
         args.output_base_path = pathlib.Path("/training/") / args.output_base_path
