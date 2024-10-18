@@ -8,11 +8,15 @@ from farconf import parse_cli, to_dict
 from names_generator import generate_name
 from stable_baselines3.common.type_aliases import check_cast
 
-# Make sure the command configs are registered
-import learned_planner.cmd  # type: ignore
 import learned_planner.evaluate  # noqa: F401
 from learned_planner.configs.command_config import WandbCommandConfig
 from learned_planner.interp.collect_dataset import DatasetStore  # noqa: F401
+
+# Make sure the command configs are registered
+try:
+    import learned_planner.cmd  # noqa: F401
+except ImportError:
+    pass
 
 
 def setup_run(cfg: WandbCommandConfig) -> Path:

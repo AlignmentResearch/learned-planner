@@ -48,15 +48,17 @@ The trained DRC networks are available in our [huggingface model hub](https://hu
 - DRC(1, 1):  [drc11/eue6pax7/cp_2002944000](https://huggingface.co/AlignmentResearch/learned-planner/tree/main/drc11/eue6pax7/cp_2002944000)
 - ResNet:  [resnet/syb50iz7/cp_2002944000](https://huggingface.co/AlignmentResearch/learned-planner/tree/main/resnet/syb50iz7/cp_2002944000)
 
+Probes and SAEs trained on the DRC(3, 3) model are available at the same [huggingface model hub](https://huggingface.co/AlignmentResearch/learned-planner) under the `probes` and `saes` directories.
+
 
 ## Loading the model
 
-First, you will need to clone the Boxoban levels. We will use the `BOXOBAN_CACHE` environment variable to specify the directory
+First, you will need to clone the Boxoban levels. We assume that the levels are stored in the `training/.sokoban_cache` directory. If you want to change the path to the directory, you can set a new path in the `learned_planners/__init__.py` file. You can clone the levels using the following commands:
 
 ```
-BOXOBAN_CACHE="/opt/sokoban_cache"  # change if desired
-sudo mkdir -p "$BOXOBAN_CACHE"
-sudo git clone https://github.com/google-deepmind/boxoban-levels \
+BOXOBAN_CACHE="training/.sokoban_cache"  # change if desired
+mkdir -p "$BOXOBAN_CACHE"
+git clone https://github.com/google-deepmind/boxoban-levels \
   "$BOXOBAN_CACHE/boxoban-levels-master"
 ```
 
@@ -66,25 +68,16 @@ You can load the model using the following code:
 import pathlib
 import os
 
-from cleanba.environments import BoxobanConfig
 from cleanba import cleanba_impala
-from huggingface_hub import snapshot_download
+
+from learned_planners.policies import download_policy_from_huggingface
+from learned_planners.interp.utils import get_boxoban_cfg
 
 MODEL_PATH_IN_REPO = "drc33/bkynosqi/cp_2002944000/" # DRC(3, 3) 2B checkpoint
-MODEL_BASE_PATH = pathlib.Path(
-    snapshot_download("AlignmentResearch/learned-planner", allow_patterns=[MODEL_PATH_IN_REPO + "*"]),
-) # only download the specific model
-MODEL_PATH = MODEL_BASE_PATH / MODEL_PATH_IN_REPO
-BOXOBAN_CACHE=os.environ.get("BOXOBAN_CACHE", "/opt/sokoban_cache")
+MODEL_PATH = download_policy_from_huggingface(MODEL_PATH_IN_REPO)
 
-env = BoxobanConfig(
-    cache_path=BOXOBAN_CACHE,
-    num_envs=1,
-    max_episode_steps=120,
-    asynchronous=False,
-    tinyworld_obs=True,
-).make()
-jax_policy, carry_t, jax_args, train_state, _ = cleanba_impala.load_train_state(MODEL_PATH, env)
+env_cfg = get_boxoban_cfg().make()
+jax_policy, carry_t, jax_args, train_state, _ = cleanba_impala.load_train_state(MODEL_PATH, env_cfg)
 ```
 
 The `jax_policy` loads the network using the JAX implementation of the DRC network in the [lp-training repository](https://github.com/AlignmentResearch/lp-training/).
@@ -94,10 +87,10 @@ This repository provides the PyTorch implementation of the DRC network compatibl
 ```python
 from learned_planner.interp.utils import load_jax_model_to_torch
 
-cfg_th, policy_th = load_jax_model_to_torch(MODEL_PATH, env)
+cfg_th, policy_th = load_jax_model_to_torch(MODEL_PATH, env_cfg)
 ```
 
-## Reproducing paper results
+## Reproducing behavioral results
 
 The behavioral results from the paper can be reproduced using the `behavior_analysis.py` script:
 
@@ -108,6 +101,48 @@ python plot/behavior_analysis.py
 The script uses CPU or GPU depending on the type of JAX library installed. See the installation section for more details. This script will generate the plots in the `{output_base_path}/{model_name}/plots` directory.
 
 The A* solutions for the [Boxoban levels](https://github.com/google-deepmind/boxoban-levels) can be found [here](https://huggingface.co/datasets/AlignmentResearch/boxoban-astar-solutions).
+
+## Probes and SAEs
+
+### Collecting the activations
+
+For training the probes, we first need to generate the dataset of model activations. The `learned_planners/interp/collect_dataset.py` script can be used to cache the activations. Activations of each level are stored in a separate pickle object of the class `learned_planners.interp.collect_dataset.DatasetStore`. The `DatasetStore` The script uses the [DRC(3, 3)](https://huggingface.co/AlignmentResearch/learned-planner/tree/main/drc33/bkynosqi/cp_2002944000) model by default. See the script for additional options.
+
+```bash
+python learned_planners/interp/collect_dataset.py --boxoban_cache {BOXOBAN_CACHE} --output_path {activation_cache_path}
+```
+
+### Creating the dataset for the probes
+
+The `learned_planners/interp/save_ds.py` script takes the activations path using `--dataset_path` and `--labels_type` to create the dataset for the probe with the specified type and saves the torch dataset `learned_planners.interp.train_probes.ActivationsDataset` in the same dataset path. See the script for additional options.
+
+```bash
+python learned_planners/interp/save_ds.py --dataset_path {activation_cache_path} --labels_type {labels_type}
+```
+
+### Training the probes or SAEs
+
+The files provided in `experiments/probes/` defines the hyperparameter search space for different probes. Running the files will train a probe with each hyperparameter configuration. The `plot/interp/probes/probe_hp_search.py` script can be used to plot the results of the hyperparameter search and pick the best probe on the validation set.
+
+The files provided in `experiments/sae/` defines the hyperparameter search space for training the SAEs.
+
+### Evaluating the probes or SAEs
+
+The `plot/interp/probes/` directory contains the scripts to evaluate the different types of probes in multiple ways. These are main scripts used to evaluate the results in the paper:
+- `evaluate_probe`: evaluates the precision, recall, and F1 scores of the probes on a dataset.
+- `ci_score_direction_probe`: computes the causal intervention score for box or agent direction probes by modifying one single direction (move) in the plan using the probe and checking whether the agent follows the modified plan.
+- `ci_score_box_target_probe`: computes the causal intervention score for next_box or next_target probes.
+- `ci_score_from_csv`: The above scripts save the results in a CSV file. This script can be used to compute the average and best case CI scores from the CSV files.
+- `measure_plan_quality`: computes the plan quality of the boxes directions probe across thinking steps.
+- `measure_plan_recall`: computes the plan recall of the boxes directions probe across thinking steps.
+
+The `plot/interp/evaluate_features.py` script can be used to find interpretable features in channels, SAE feature neurons. Probes can also be evaluated in this script.
+
+
+### Visualizations
+
+The `plot/interp/save_{probe/sae}_videos.py` script can be used to save the videos of probes / SAEs features.
+
 
 ## Citation
 

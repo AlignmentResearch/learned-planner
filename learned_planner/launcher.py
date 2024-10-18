@@ -8,13 +8,10 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 import wandb
-import yaml
 from farconf import parse_cli
 from git.repo import Repo
 from names_generator import generate_name, random_names
 from typing_extensions import Self
-
-from learned_planner import ON_CLUSTER
 
 
 @functools.lru_cache()
@@ -22,15 +19,6 @@ def git_latest_commit() -> str:
     repo = Repo(".")
     commit_hash = str(repo.head.object.hexsha)
     return commit_hash
-
-
-@functools.lru_cache()
-def circleci_container_tag() -> str:
-    # Use the latest tested container tag
-    with (Path(__file__).parent.parent / ".circleci" / "config.yml").open() as f:
-        circleci = yaml.safe_load(f)
-    container_tag = circleci["parameters"]["docker_img_version"]["default"]
-    return container_tag
 
 
 def group_from_fname(fname: str, suffix: str = "") -> str:
@@ -43,7 +31,7 @@ def group_from_fname(fname: str, suffix: str = "") -> str:
 @dataclasses.dataclass
 class FlamingoRun:
     commands: list[list[str]]
-    CONTAINER_TAG: str = dataclasses.field(default_factory=circleci_container_tag)
+    CONTAINER_TAG: str = ""
     COMMIT_HASH: str = dataclasses.field(default_factory=git_latest_commit)
     CPU: int | str = 4
     MEMORY: str = "20G"
@@ -84,9 +72,9 @@ def create_jobs(
     runs: Sequence[FlamingoRun],
     group: str,
     project: str = "learned-planners",
-    entity: str = "farai",
     wandb_mode: str = "online",
     job_template_path: Optional[Path] = None,
+    run_locally: bool = True,
 ) -> tuple[Sequence[str], str]:
     launch_id = generate_name(style="hyphen")
 
@@ -111,6 +99,9 @@ def create_jobs(
             split_command.extend(
                 [
                     f"WANDB_JOB_NAME={shlex.quote(wandb_job_name)}",
+                    f"WANDB_RUN_GROUP={shlex.quote(group)}",
+                    f"WANDB_PROJECT={shlex.quote(project)}",
+                    f"WANDB_MODE={shlex.quote(wandb_mode)}",
                     *map(shlex.quote, run_cli),
                 ]
                 + [("&" if run.parallel else " || true ;") if len(run.commands) > 1 else ""],
@@ -124,17 +115,17 @@ def create_jobs(
             WANDB_JOB_NAME=wandb_job_name,
             NAME=job_name,
             LAUNCH_ID=launch_id,
-            WANDB_ENTITY=entity,
+            WANDB_ENTITY="",
             WANDB_PROJECT=project,
             WANDB_MODE=wandb_mode,
             COMMAND=" ".join(split_command),
             OMP_NUM_THREADS=json.dumps(str(run.CPU if isinstance(run.CPU, int) else 1)),
             **run.format_args(),
         )
-        if ON_CLUSTER:
-            jobs.append(job)
-        else:
+        if run_locally:
             jobs.append(" ".join(split_command))
+        else:
+            jobs.append(job)
 
     return jobs, launch_id
 
@@ -143,30 +134,33 @@ def launch_jobs(
     runs: Sequence[FlamingoRun],
     group: str,
     project: str = "learned-planners",
-    entity: str = "farai",
     wandb_mode: str = "online",
     job_template_path: Optional[Path] = None,
+    run_locally: bool = True,
 ) -> tuple[str, str]:
     repo = Repo(".")
     repo.remote("origin").push(repo.active_branch.name)  # Push to an upstream branch with the same name
-    start_number = 1 + len(wandb.Api().runs(f"{entity}/{project}"))
+    start_number = 1 + len(wandb.Api().runs(f"{project}"))
     jobs, launch_id = create_jobs(
         start_number,
         runs,
         group=group,
         project=project,
-        entity=entity,
         wandb_mode=wandb_mode,
         job_template_path=job_template_path,
+        run_locally=run_locally,
     )
-    if ON_CLUSTER:
+    if run_locally:
+        for cmd in jobs:
+            print("Running:")
+            print(cmd)
+            print()
+            subprocess.run(cmd, shell=True)
+        return "\n\n".join(jobs), launch_id
+    else:
         yamls_for_all_jobs = "\n\n---\n\n".join(jobs)
 
         if not any(s in sys.argv for s in ["--dryrun", "--dry-run", "-d"]):
             subprocess.run(["kubectl", "create", "-f", "-"], check=True, input=yamls_for_all_jobs.encode())
             print(f"Jobs launched. To delete them run:\nkubectl delete jobs -l launch-id={launch_id}")
         return yamls_for_all_jobs, launch_id
-    else:
-        for job in jobs:
-            print(job)
-        return "\n\n".join(jobs), launch_id
