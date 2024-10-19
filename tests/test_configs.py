@@ -14,7 +14,7 @@ def test_command_114():
     all_clis = sum((r.commands for r in runs), start=[])
 
     all_configs = [parse_cli(cli, WandbCommandConfig) for cli in all_clis]
-    target_config = train_cluster_114()
+    target_config = train_local_114()
     cmd = check_cast(TrainConfig, target_config.cmd)
     all_configs[0].cmd = check_cast(TrainConfig, all_configs[0].cmd)
     cmd.checkpoint_freq = 300_000

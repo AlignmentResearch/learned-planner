@@ -14,7 +14,7 @@ from learned_planner.interp.collect_dataset import DatasetStore  # noqa: F401
 
 # Make sure the command configs are registered
 try:
-    import learned_planner.cmd  # noqa: F401
+    import learned_planner.cmd  # noqa: F401 # type: ignore
 except ImportError:
     pass
 
