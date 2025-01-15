@@ -122,7 +122,10 @@ python learned_planner/interp/save_ds.py --dataset_path {activation_cache_path} 
 
 ### Training the probes or SAEs
 
-The files provided in `experiments/probes/` defines the hyperparameter search space for different probes. Running the files will train a probe with each hyperparameter configuration. The `plot/interp/probes/probe_hp_search.py` script can be used to plot the results of the hyperparameter search and pick the best probe on the validation set.
+The files provided in `experiments/probes/` defines the hyperparameter search space for different probes. Running the files will train a probe with each hyperparameter configuration. The `plot/interp/probes/probe_hp_search.py` script can be used to plot the results of the hyperparameter search and pick the best probe on the validation set. The scripts in experiments directory run the appropriate shell command to train the probes. Alternatively, you can directly train the probes using the command below. The default config is available in `learned_planners/configs/train_probe.py`. You can overwrite arguments in the config using the `cmd.{argument}={value}` syntax. 
+```bash
+WANDB_MODE=disabled python -m learned_planners --from-py-fn=learned_planners.configs.train_probe:train_local cmd.train_on.layer={layer} cmd.train_on.dataset_name={dataset_name} cmd.dataset_path={dataset_path}
+```
 
 The files provided in `experiments/sae/` defines the hyperparameter search space for training the SAEs.
 
