@@ -184,6 +184,9 @@ class ConvLSTMCell(nn.Module):
         self.hook_layer_input = InputDependentHookPoint(input_dependent_postfixes)
         self.hook_prev_layer_hidden = InputDependentHookPoint(input_dependent_postfixes)
 
+        self.interpretable_forward: Optional[Callable] = None  # interpretable forward function
+        self.hook_interpretable_forward = InputDependentHookPoint(input_dependent_postfixes)
+
     def pool_and_project(self, to_pool: th.Tensor) -> th.Tensor:
         B, C, H, W = to_pool.shape
         h_max = to_pool.max(2).values.max(2).values
@@ -214,7 +217,8 @@ class ConvLSTMCell(nn.Module):
         prev_layer_hidden: th.Tensor,
         cur_state: ConvLSTMCellState,
         pos: int,
-        step: int,
+        tick: int,
+        use_interpretable_forward: bool = False,
     ) -> tuple[th.Tensor, ConvLSTMCellState]:
         h_cur, c_cur = cur_state
         # Have to squeeze the incoming state because we added a n_layers dimension on purpose, to have the batch size be
@@ -222,7 +226,7 @@ class ConvLSTMCell(nn.Module):
         h_cur = h_cur.squeeze(0)
         c_cur = c_cur.squeeze(0)
 
-        postfix = make_postfix(pos, step)
+        postfix = make_postfix(pos, tick)
 
         h_cur, c_cur = self.hook_input_h(h_cur, postfix), self.hook_input_c(c_cur, postfix)
         skip_input = self.hook_layer_input(skip_input, postfix)
@@ -269,6 +273,13 @@ class ConvLSTMCell(nn.Module):
 
         h_next = self.hook_h(h_next, postfix)
         c_next = self.hook_c(c_next, postfix)
+
+        if use_interpretable_forward:
+            if self.interpretable_forward is not None:
+                h_next = self.interpretable_forward(h_next, skip_input, prev_layer_hidden, h_cur, pos, tick, self)
+                # hook for convenience of fetching updated acts. We should use the above interpretable_forward function to make
+                # any live changes to the hidden state.
+                h_next = self.hook_interpretable_forward(h_next, postfix)
 
         # Unsqueeze state on the way out
         return h_next, (h_next.unsqueeze(0), c_next.unsqueeze(0))
@@ -435,6 +446,7 @@ class ConvLSTMFeaturesExtractor(RecurrentFeaturesExtractor[th.Tensor, ConvLSTMSt
         state: ConvLSTMState,
         episode_starts: th.Tensor,
         return_repeats: bool = False,
+        use_interpretable_forward: bool = False,
     ) -> Tuple[th.Tensor, ConvLSTMState]:
         if episode_starts.ndim == 1:
             seq_len = 1
@@ -467,7 +479,9 @@ class ConvLSTMFeaturesExtractor(RecurrentFeaturesExtractor[th.Tensor, ConvLSTMSt
             for r in range(self.cfg.repeats_per_step):
                 prev_layer_hidden_state = state[-1][0].squeeze(0)  # Top-down skip connection from previous time step
                 for i, cell in enumerate(self.cell_list):
-                    new_state_h, state[i] = cell.forward(obs_input, prev_layer_hidden_state, state[i], t, r)
+                    new_state_h, state[i] = cell.forward(
+                        obs_input, prev_layer_hidden_state, state[i], t, r, use_interpretable_forward
+                    )
                     if self.cfg.residual:
                         prev_layer_hidden_state = new_state_h + prev_layer_hidden_state
                     else:

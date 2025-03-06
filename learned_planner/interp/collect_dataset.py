@@ -1,10 +1,10 @@
 import argparse
+import concurrent.futures as cf
 import dataclasses
 import pathlib
 import pickle
-import re
 import warnings
-from typing import Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import gymnasium as gym
 import numpy as np
@@ -24,8 +24,8 @@ from tqdm import tqdm
 from learned_planner.convlstm import ConvLSTMOptions
 from learned_planner.environments import BoxobanConfig, EnvpoolSokobanVecEnvConfig
 from learned_planner.interp import alternative_plans
-from learned_planner.interp.render_svg import BOX, BOX_ON_TARGET, PLAYER_ON_TARGET, TARGET
-from learned_planner.interp.utils import load_jax_model_to_torch
+from learned_planner.interp.render_svg import BOX, BOX_ON_TARGET, FLOOR, PLAYER, PLAYER_ON_TARGET, TARGET
+from learned_planner.interp.utils import join_cache_across_steps, load_jax_model_to_torch
 from learned_planner.policies import download_policy_from_huggingface
 
 SOLVE_REWARD = 10.9
@@ -37,7 +37,7 @@ EMPTY_SQUARE = -1  # Value for a grid cell that does not contain a box or target
 
 @dataclasses.dataclass
 class DatasetStore:
-    store_path: pathlib.Path
+    store_path: Optional[pathlib.Path]
     obs: th.Tensor  # Observations. Dimension[steps or steps*layers, 3 RGB, 10, 10]
     rewards: Optional[th.Tensor] = None
     solved: bool = False
@@ -49,7 +49,8 @@ class DatasetStore:
 
     def __post_init__(self):
         if self.rewards is not None:
-            assert self.obs.shape[0] == self.rewards.shape[0], f"{self.obs.shape[0]} != {self.rewards.shape[0]}"
+            if self.obs.shape[0] != self.rewards.shape[0]:
+                warnings.warn(f"Obs and rewards shape not matching: {self.obs.shape[0]} != {self.rewards.shape[0]}")
         if self.pred_values is not None and self.pred_actions is not None:
             assert self.pred_actions.shape[0] == self.pred_values.shape[0]
         for k, v in self.model_cache.items():
@@ -62,6 +63,7 @@ class DatasetStore:
 
     def save(self):
         self.cpu()
+        assert self.store_path is not None
         with open(self.store_path, "wb") as f:
             pickle.dump(self, f)
 
@@ -73,6 +75,9 @@ class DatasetStore:
 
     @property
     def n_steps_to_think(self):
+        if self.store_path is None:
+            warnings.warn("store_path is None, using default n_steps_to_think=0")
+            return 0
         try:
             return int(self.store_path.parent.name.split("_")[0])
         except AttributeError:
@@ -92,6 +97,19 @@ class DatasetStore:
     def load(store_path: str):
         with open(store_path, "rb") as f:
             return pickle.load(f)
+
+    @staticmethod
+    def load_from_play_output(play_output, batch_idx: int = 0):
+        length = play_output.lengths[batch_idx]
+        return DatasetStore(
+            store_path=None,
+            obs=play_output.obs[:length, batch_idx],
+            rewards=play_output.rewards[:length, batch_idx],
+            solved=play_output.solved[batch_idx],
+            pred_actions=play_output.acts[:length, batch_idx],
+            pred_values=None,
+            model_cache={k: v[:length, batch_idx].numpy() for k, v in play_output.cache.items()},
+        )
 
     def actual_steps(
         self,
@@ -154,16 +172,27 @@ class DatasetStore:
         return th.where(next_target_time)[0].cpu().numpy()
 
     def is_wall(self, i: int, j: int) -> bool:
+        if i < 0 or i >= self.obs[0].shape[1] or j < 0 or j >= self.obs[0].shape[2]:
+            return True
         # If, in step 0, all RGB values are 0, this is a wall.
         return self.obs[0, :, i, j].eq(0).all().item()  # type: ignore
 
-    def is_next_to_a_wall(self, i: int, j: int) -> bool:
-        if i == 0 or i == 9 or j == 0 or j == 9:
-            return True
-        return any(self.is_wall(x, y) for x, y in [(i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)])
+    def is_box(self, i: int, j: int) -> bool:
+        # If, in step 0, all RGB values are 0, this is a wall.
+        return self.obs[0, :, i, j].eq(th.tensor(BOX)).all().item()
 
-    def get_wall_directions(self, i: int, j: int) -> np.ndarray:
-        return np.array([self.is_wall(x, y) for x, y in [(i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)]])
+    def is_next_to_a_wall(self, i: int, j: int, box_is_wall: bool = False) -> bool:
+        is_wall = any(self.is_wall(x, y) for x, y in [(i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)])
+        if box_is_wall:
+            is_wall = is_wall or any(self.is_box(x, y) for x, y in [(i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)])
+        return is_wall
+
+    def get_wall_directions(self, i: int, j: int, box_is_wall: bool = False) -> np.ndarray:
+        walls = np.array([self.is_wall(x, y) for x, y in [(i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)]])
+        if box_is_wall:
+            boxes = np.array([self.is_box(x, y) for x, y in [(i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)]])
+            walls |= boxes
+        return walls
 
     @staticmethod
     def map_idx_to_grid(step_wise_idxs: th.Tensor) -> th.Tensor:
@@ -220,10 +249,10 @@ class DatasetStore:
         next_box_positions = self.map_idx_to_grid(next_box_positions)
         return next_box_positions
 
-    def get_agent_positions(self) -> th.Tensor:
+    def get_agent_positions(self, return_map: bool = False) -> th.Tensor:
         agent_positions = []
         for obs in self.obs:
-            agent_positions.append(self.get_agent_position_per_step(obs).cpu())
+            agent_positions.append(self.get_agent_position_per_step(obs, return_map=return_map).cpu())
         return th.stack(agent_positions)
 
     def get_agent_position_per_step(self, obs, return_map: bool = False) -> th.Tensor:
@@ -248,6 +277,8 @@ class DatasetStore:
         include_current_position: bool = True,
         multioutput: bool = True,
         variable_boxes: bool = False,
+        return_timestep_map: bool = False,
+        future_n_steps: Optional[int] = None,
     ) -> th.Tensor:
         agent_positions = self.get_agent_positions()
         init_val, shape, dtype = -1, [len(agent_positions), 10, 10], th.int32
@@ -255,6 +286,7 @@ class DatasetStore:
             shape.append(4)
             init_val, dtype = False, th.bool
         future_direction_map = init_val * th.ones(shape, dtype=dtype)
+        future_direction_timestep_map = -1 * th.ones((len(agent_positions), 10, 10), dtype=th.int32)
         inv_change_coordinates = {tuple(v): k for k, v in CHANGE_COORDINATES.items()}
         correct_indices = range(len(agent_positions) - 1) if move_out else range(1, len(agent_positions))
         start_idx_for_pos = th.zeros((10, 10), dtype=th.int64)
@@ -270,11 +302,14 @@ class DatasetStore:
                 continue
 
             if multioutput:
-                future_direction_map[:upto_idx, *pos, inv_change_coordinates[*change.tolist()]] = True
+                from_idx = 0 if future_n_steps is None else max(0, upto_idx - future_n_steps)
+                future_direction_map[from_idx:upto_idx, *pos, inv_change_coordinates[*change.tolist()]] = True
             else:
                 from_idx = start_idx_for_pos[*pos].item()
+                from_idx = from_idx if future_n_steps is None else max(0, from_idx, upto_idx - future_n_steps)
                 future_direction_map[from_idx:upto_idx, *pos] = inv_change_coordinates[*change.tolist()]
                 start_idx_for_pos[*pos] = upto_idx
+            future_direction_timestep_map[from_idx:upto_idx, *pos] = i
         if self.solved:
             last_agent_pos = agent_positions[-1]
             target_positions = self.get_target_positions(variables_boxes=variable_boxes)
@@ -294,9 +329,14 @@ class DatasetStore:
             from_idx = start_idx_for_pos[*pos].item()
             upto_idx += 1
             if multioutput:
-                future_direction_map[:, *pos, dir_idx] = True  # type: ignore
+                from_idx = 0 if future_n_steps is None else max(0, upto_idx - future_n_steps)
+                future_direction_map[from_idx:, *pos, dir_idx] = True  # type: ignore
             else:
+                from_idx = from_idx if future_n_steps is None else max(0, from_idx, upto_idx - future_n_steps)
                 future_direction_map[from_idx:, *pos] = dir_idx  # type: ignore
+            future_direction_timestep_map[from_idx:, *pos] = len(agent_positions) - 1
+        if return_timestep_map:
+            return future_direction_map, future_direction_timestep_map
         return future_direction_map
 
     def get_box_positions(
@@ -323,48 +363,43 @@ class DatasetStore:
         only_solved: bool = False,
         only_unsolved: bool = False,
     ) -> th.Tensor:
-        # The pixel RGB values are taken from here:
-        # https://github.com/AlignmentResearch/gym-sokoban/tree/default/gym_sokoban/envs/render_utils.py#L113-L120
-        if len(obs.shape) == 3:
-            assert obs.shape[0] == 3, f"Expected (3, 10, 10), got {obs.shape}"
-            player_on_target = (obs[0] == 219) & (obs[1] == 212) & (obs[2] == 56)
-            target_positions = (obs[0] == 254) & ((obs[1] == 126) | (obs[1] == 95)) & ((obs[2] == 125) | (obs[2] == 56))
-            if return_map:
-                return target_positions
-            target_positions = th.where(target_positions | player_on_target)
-
-            positions_list = [tuple(pos.tolist()) for pos in th.stack(target_positions).T]
-            if not variables_boxes:
-                assert len(positions_list) == NUM_BOXES, f"Expected {NUM_BOXES} targets, got {len(positions_list)}"
-            unique_positions = set(positions_list)
-            if not variables_boxes:
-                assert (
-                    len(unique_positions) == NUM_BOXES
-                ), f"Expected {NUM_BOXES} unique target positions, but found {len(unique_positions)}"
-        elif len(obs.shape) == 4:
-            assert obs.shape[1] == 3, f"Expected (batch_size, 3, 10, 10), got {obs.shape}"
-            if only_solved:
-                # target_positions = (obs[:, 0] == 254) & (obs[:, 1] == 95) & (obs[:, 2] == 56)
-                target_positions = (obs == BOX_ON_TARGET[None, :, None, None]).all(1)
-                return target_positions
-            elif only_unsolved:
-                # target_positions = (obs[:, 0] == 254) & (obs[:, 1] == 126) & (obs[:, 2] == 125)
-                target_positions = (obs == TARGET[None, :, None, None]).all(1)
-            else:
-                # target_positions = (
-                #     (obs[:, 0] == 254) & ((obs[:, 1] == 95) | (obs[:, 1] == 126)) & ((obs[:, 2] == 56) | (obs[:, 2] == 125))
-                # )
-                solved = (obs == BOX_ON_TARGET[None, :, None, None]).all(1)
-                unsolved = (obs == TARGET[None, :, None, None]).all(1)
-                target_positions = solved | unsolved
-            # player_on_target = (obs[:, 0] == 219) & (obs[:, 1] == 212) & (obs[:, 2] == 56) if not only_solved else None
-            player_on_target = (obs == PLAYER_ON_TARGET[None, :, None, None]).all(1) if not only_solved else None
-            target_positions = target_positions | player_on_target
-            if return_map:
-                return target_positions
+        assert obs.shape[-3] == 3, f"Expected (..., 3, 10, 10), got {obs.shape}"
+        player_on_target = (obs == PLAYER_ON_TARGET[:, None, None]).all(dim=-3)
+        unsolved_target_positions = (obs == TARGET[:, None, None]).all(dim=-3) | player_on_target
+        solved_target_positions = (obs == BOX_ON_TARGET[:, None, None]).all(dim=-3)
+        ret = (
+            solved_target_positions
+            if only_solved
+            else unsolved_target_positions
+            if only_unsolved
+            else unsolved_target_positions | solved_target_positions
+        )
+        if return_map:
+            return ret
+        if len(obs.shape) > 3:
             raise NotImplementedError("Not implemented for batched observations")
+        target_positions = th.where(ret)
 
+        positions_list = [tuple(pos.tolist()) for pos in th.stack(target_positions).T]
+        if not variables_boxes:
+            assert len(positions_list) == NUM_BOXES, f"Expected {NUM_BOXES} targets, got {len(positions_list)}"
+        unique_positions = set(positions_list)
+        if not variables_boxes:
+            assert (
+                len(unique_positions) == NUM_BOXES
+            ), f"Expected {NUM_BOXES} unique target positions, but found {len(unique_positions)}"
         return th.stack(target_positions).T  # type: ignore
+
+    @staticmethod
+    def get_floor_positions_from_obs(obs, return_map: bool = False) -> th.Tensor:
+        assert obs.shape[-3] == 3, f"Expected (..., 3, 10, 10), got {obs.shape}"
+        floor_positions = (obs == FLOOR[:, None, None]).all(dim=-3)
+        if return_map:
+            return floor_positions
+        if len(obs.shape) > 3:
+            raise NotImplementedError("Not implemented for batched observations")
+        floor_positions = th.where(floor_positions)
+        return th.stack(floor_positions).T  # type: ignore
 
     @staticmethod
     def get_box_position_per_step(
@@ -391,18 +426,24 @@ class DatasetStore:
             assert len(box_pos[0]) == NUM_BOXES, f"Expected {NUM_BOXES} boxes, got {len(box_pos[0])}"
         return th_or_np.stack(box_pos).T  # type: ignore
 
-    def get_target_positions(self, obs=None, variables_boxes: bool = False) -> th.Tensor:
+    def get_target_positions(self, obs=None, variables_boxes: bool = False, return_map: bool = False) -> th.Tensor:
         if obs is None:
             obs = self.obs[0]
-        return self.get_target_positions_from_obs(obs, variables_boxes)
+        return self.get_target_positions_from_obs(obs, variables_boxes, return_map)
 
-    def target_labels_map(self, obs=None) -> th.Tensor:
+    def get_floor_positions(self, obs=None, return_map: bool = False) -> th.Tensor:
+        if obs is None:
+            obs = self.obs[0]
+        return self.get_floor_positions_from_obs(obs, return_map)
+
+    def target_labels_map(self, obs=None, incremental_labels=True) -> th.Tensor:
         """Return a map of each target positions. Map values are used to title the targets as T0 to T3."""
         target_positions = self.get_target_positions(obs)
 
         label_map = EMPTY_SQUARE * th.ones((10, 10), dtype=th.int64)
         # Set the 4 squares where the targets are to 0, 1, 2, 3
-        label_map[target_positions[:, 0], target_positions[:, 1]] = th.arange(NUM_BOXES)
+        labels = th.arange(NUM_BOXES) if incremental_labels else th.ones(NUM_BOXES, dtype=th.int64)
+        label_map[target_positions[:, 0], target_positions[:, 1]] = labels
 
         unique_locations = th.nonzero(label_map != EMPTY_SQUARE, as_tuple=False)
         assert (
@@ -440,13 +481,16 @@ class DatasetStore:
         include_current_position: bool = True,
         multioutput: bool = True,
         variable_boxes: bool = False,
-    ) -> th.Tensor:
+        return_timestep_map: bool = False,
+        future_n_steps: Optional[int] = None,
+    ) -> Union[th.Tensor, Tuple[th.Tensor, th.Tensor]]:
         box_positions = self.get_box_positions(variable_boxes=variable_boxes)
         init_val, shape, dtype = -1, [len(box_positions), 10, 10], th.int32
         if multioutput:
             shape.append(4)
             init_val, dtype = False, th.bool
         future_direction_map = init_val * th.ones(shape, dtype=dtype)
+        future_direction_timestep_map = -1 * th.ones((len(box_positions), 10, 10), dtype=th.int32)
         inv_change_coordinates = {tuple(v): k for k, v in CHANGE_COORDINATES.items()}
         correct_indices = range(len(box_positions) - 1) if move_out else range(1, len(box_positions))
         start_idx_for_pos = th.zeros((10, 10), dtype=th.int64)
@@ -465,11 +509,14 @@ class DatasetStore:
                 change = -change if move_out else change
 
             if multioutput:
-                future_direction_map[:upto_idx, *pos, inv_change_coordinates[*change.tolist()]] = True
+                from_idx = 0 if future_n_steps is None else max(0, upto_idx - future_n_steps)
+                future_direction_map[from_idx:upto_idx, *pos, inv_change_coordinates[*change.tolist()]] = True
             else:
                 from_idx = start_idx_for_pos[*pos].item()
+                from_idx = from_idx if future_n_steps is None else max(0, from_idx, upto_idx - future_n_steps)
                 future_direction_map[from_idx:upto_idx, *pos] = inv_change_coordinates[*change.tolist()]
                 start_idx_for_pos[*pos] = upto_idx
+            future_direction_timestep_map[from_idx:upto_idx, *pos] = i
 
         if self.solved:
             final_target, final_box = self.different_positions(
@@ -482,11 +529,17 @@ class DatasetStore:
             change = final_target - final_box
             pos = final_box if move_out else final_target
             from_idx = start_idx_for_pos[*pos].item()
+            upto_idx = len(box_positions)
             if multioutput:
-                future_direction_map[:, *pos, inv_change_coordinates[*change.tolist()]] = True
+                from_idx = 0 if future_n_steps is None else max(0, upto_idx - future_n_steps)
+                future_direction_map[from_idx:, *pos, inv_change_coordinates[*change.tolist()]] = True
             else:
+                from_idx = from_idx if future_n_steps is None else max(0, from_idx, upto_idx - future_n_steps)
                 future_direction_map[from_idx:, *pos] = inv_change_coordinates[*change.tolist()]
+            future_direction_timestep_map[from_idx:, *pos] = len(box_positions) - 1
 
+        if return_timestep_map:
+            return future_direction_map, future_direction_timestep_map
         return future_direction_map
 
     def boxes_label_map(self) -> th.Tensor:
@@ -557,6 +610,109 @@ class DatasetStore:
         return plan.moveaxis(0, -1)
 
 
+@dataclasses.dataclass
+class HelperFeatures:
+    ds: Optional[DatasetStore]
+    agent: np.ndarray  # (seq_len, y, x)
+    floor: np.ndarray
+    unsolved_boxes: np.ndarray
+    solved_boxes: np.ndarray
+    unsolved_targets: np.ndarray
+    box_directions: Optional[np.ndarray] = None  # action along last dim
+    agent_directions: Optional[np.ndarray] = None  # action along last dim
+    actions: Optional[np.ndarray] = None  # action along last dim
+
+    def to_nparray(self, bias=False) -> np.ndarray:
+        base = [np.ones_like(self.agent)] if bias else []
+        base = np.stack(
+            base + [self.agent, self.floor, self.unsolved_boxes, self.solved_boxes, self.unsolved_targets], axis=-1
+        )
+        if self.box_directions is not None:
+            base = np.concatenate([base, self.box_directions, self.agent_directions, self.actions], axis=-1)  # type: ignore
+        return base
+
+    def to_tensor(self, bias=False) -> th.Tensor:
+        return th.tensor(self.to_nparray(bias))
+
+    def myopic(self, feature_name="box_directions", future_n_steps=1):
+        assert self.ds is not None
+        if feature_name == "box_directions":
+            ret = self.ds.boxes_future_direction_map(multioutput=True, future_n_steps=future_n_steps, variable_boxes=True)
+            assert isinstance(ret, th.Tensor)
+            return ret.float().numpy()
+        elif feature_name == "agent_directions":
+            return (
+                self.ds.agents_future_direction_map(multioutput=True, future_n_steps=future_n_steps, variable_boxes=True)
+                .float()
+                .numpy()
+            )
+        else:
+            raise ValueError("Invalid feature_name")
+
+    @staticmethod
+    def from_ds(ds: DatasetStore, use_future_features: bool = True) -> "HelperFeatures":
+        agent_pos = ds.get_agent_positions(return_map=True)
+        floor_pos = ds.get_floor_positions(return_map=True)
+        unsolved_box_pos = ds.get_box_positions(return_map=True, only_unsolved=True)
+        solved_box_pos = ds.get_box_positions(return_map=True, only_solved=True)
+
+        unsolved_target_pos = ds.get_target_positions(return_map=True)
+        seq_len = agent_pos.shape[0]
+        features = HelperFeatures(
+            ds,
+            agent_pos.float().numpy(),
+            floor_pos[None].repeat(seq_len, 1, 1).float().numpy(),
+            unsolved_box_pos.float().numpy(),
+            solved_box_pos.float().numpy(),
+            unsolved_target_pos[None].repeat(seq_len, 1, 1).float().numpy(),
+        )
+
+        if use_future_features:
+            box_directions = ds.boxes_future_direction_map(multioutput=True, variable_boxes=True)
+            assert isinstance(box_directions, th.Tensor)
+            agent_directions = ds.agents_future_direction_map(multioutput=True, variable_boxes=True)
+
+            action_pred = ds.get_actions(only_env_steps=True)
+            action_pred = th.nn.functional.one_hot(action_pred, num_classes=4)
+            action_pred = action_pred[:, None, None, :].repeat(1, 10, 10, 1).float().numpy()
+
+            features.box_directions = box_directions.float().numpy()
+            features.agent_directions = agent_directions.float().numpy()
+            features.actions = action_pred
+
+        return features
+
+    @staticmethod
+    def from_play_output(play_output, batch_idx: int = 0, use_future_features: bool = True) -> "HelperFeatures":
+        ds = DatasetStore.load_from_play_output(play_output, batch_idx)
+        return HelperFeatures.from_ds(ds, use_future_features)
+
+    @staticmethod
+    def feature_from_obs(obs) -> th.Tensor:
+        agent = th.all(obs == PLAYER[:, None, None], dim=-3)
+        agent_on_target = th.all(obs == (PLAYER_ON_TARGET)[:, None, None], dim=-3)
+        agent = agent | agent_on_target
+
+        floor = th.all(obs == FLOOR[:, None, None], dim=-3)
+
+        unsolved_boxes = th.all(obs == BOX[:, None, None], dim=-3)
+        solved_boxes = th.all(obs == BOX_ON_TARGET[:, None, None], dim=-3)
+
+        unsolved_targets = th.all(obs == TARGET[:, None, None], dim=-3)
+        unsolved_targets = unsolved_targets | agent_on_target
+
+        return th.stack([agent, floor, unsolved_boxes, solved_boxes, unsolved_targets], dim=-1).float()
+
+
+@dataclasses.dataclass
+class ChannelCoefs:
+    name: str
+    shift_fn: str
+    model: Any
+    resid: float
+    corr: float
+
+
 def create_eval_env(
     split: Literal["train", "valid", "test", None] = "valid",
     difficulty: Literal["unfiltered", "medium", "hard"] = "medium",
@@ -624,8 +780,8 @@ def think_for_n_steps(
             obs_for_start_envs,
             lstm_states_for_start_envs,
             reset_all if step_i == 0 else do_not_reset,
-            return_repeats=True,
             names_filter=names_filter,
+            feature_extractor_kwargs={"return_repeats": True},
         )
         actions = actions.unsqueeze(-1)
         # remove hook_pre_model as it doesn't while thinking for N steps on the same observation
@@ -662,36 +818,6 @@ def split_cache(cache, num_envs):
             for i in range(num_envs):
                 new_cache[i][k] = v[:, i, ...].cpu().numpy()
     return new_cache
-
-
-def join_cache_across_steps(cache_list):
-    """Finds the cache items, whose HookPoint names are of the form
-    `prefix.{Pos}.{Repeat}`. Then, it stacks all of the tensors from those parts
-    of the cache, so that the 0th dimension is now of size (pos * repeat).
-
-    Input: a list of caches, which optionally contain keys of the form
-      `prefix.{Pos}.{Repeat}`
-    Returns: a single cache, whose arrays are [pos*repeat, ...]-sized, with the
-      cache entries in order.
-    """
-    new_cache = [{} for _ in range(len(cache_list))]
-    for i, cache in enumerate(cache_list):
-        for k, v in cache.items():
-            match = re.match(r"(.*)\.(\d+)\.(\d+)$", k)
-            if match is not None:
-                prefix, pos, rep = match.groups()
-                if prefix not in new_cache[i]:
-                    new_cache[i][prefix] = [(int(pos), int(rep), v[None, ...])]
-                else:
-                    new_cache[i][prefix].append((int(pos), int(rep), v[None, ...]))
-            else:
-                new_cache[i][k] = [(0, 0, v)]
-    final_cache = {}
-    for k in new_cache[0].keys():
-        for lx in new_cache:
-            assert sorted(lx[k], key=lambda e: (e[0], e[1])) == lx[k]
-        final_cache[k] = np.concatenate([x for lx in new_cache for _, _, x in sorted(lx[k], key=lambda e: (e[0], e[1]))])
-    return final_cache
 
 
 def evaluate_policy_and_collect_dataset(
@@ -775,17 +901,18 @@ def evaluate_policy_and_collect_dataset(
             name = name.strip()
             if "cell_list.*" in name:
                 for layer in range(len(model.features_extractor.cell_list)):
-                    names_filter.append(name.replace("*", str(layer)))
+                    names_filter += [
+                        (name.replace("*", str(layer)) + f".{0}.{int_pos}") for int_pos in range(repeats_per_step)
+                    ]
             else:
                 names_filter.append(name)
-        names_filter = [name + f".0.{int_pos}" for name in names_filter for int_pos in range(repeats_per_step)]
         print("Filtering cache keys:", names_filter)
 
     episodes_solved = 0
     save_dir = pathlib.Path(args.output_path) / f"{n_steps_to_think}_think_step"
     save_dir.mkdir(exist_ok=True, parents=True)
 
-    with th.no_grad(), tqdm(total=n_eval_episodes) as pbar:
+    with th.no_grad(), tqdm(total=n_eval_episodes) as pbar, cf.ThreadPoolExecutor(max_workers=32) as executor:
         while num_finished_episodes < n_eval_episodes:
             if n_steps_to_think > 0:
                 states, actions_values_cache = think_for_n_steps(
@@ -812,8 +939,8 @@ def evaluate_policy_and_collect_dataset(
                 state=states,
                 episode_starts=episode_starts,
                 deterministic=deterministic,
-                return_repeats=True,
                 names_filter=names_filter,
+                feature_extractor_kwargs={"return_repeats": True},
             )
             states = tree_map(th.clone, states, namespace=type_aliases.SB3_TREE_NAMESPACE, none_is_leaf=False)  # type: ignore
 
@@ -843,7 +970,7 @@ def evaluate_policy_and_collect_dataset(
 
                 episode_rewards.append(current_rewards[i].item())
                 episode_lengths.append(int(idx_in_eps[i].item()))
-                DatasetStore(
+                ds = DatasetStore(
                     store_path=save_dir / f"idx_{num_finished_episodes}.pkl",
                     obs=all_obs[i][: idx_in_eps[i]],
                     rewards=all_rewards[i][: idx_in_eps[i]],
@@ -853,7 +980,9 @@ def evaluate_policy_and_collect_dataset(
                     model_cache=join_cache_across_steps(all_model_cache[i][: n_steps_to_think + idx_in_eps[i]]),
                     file_idx=all_level_infos[i][0],
                     level_idx=all_level_infos[i][1],
-                ).save()
+                )
+                executor.submit(ds.save)
+
                 if "level_idx" in env.reset_infos[i]:
                     all_level_infos[i] = (info["level_file_idx"], info["level_idx"])
                 episode_counts[i] += 1
