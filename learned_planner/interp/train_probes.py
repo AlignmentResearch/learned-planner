@@ -18,6 +18,7 @@ from stable_baselines3.common.vec_env.util import obs_as_tensor
 from torch.utils.data import DataLoader, Dataset, random_split
 from tqdm import tqdm
 
+from learned_planner import BOXOBAN_CACHE
 from learned_planner import __main__ as lp_main
 from learned_planner.environments import BoxobanConfig, EnvConfig
 from learned_planner.interp.collect_dataset import DatasetStore
@@ -115,8 +116,6 @@ class ActivationsDataset(Dataset):
             self.level_files = self.level_files[:train_files]
         else:
             self.level_files = self.level_files[train_files:]
-            if len(self.level_files) == 0: # use train files if no test files (useful for testing)
-                self.level_files = sum((glob(str(p / "*.pkl")) for p in self.dataset_path), [])
             if num_data_points is not None:
                 num_data_points = num_data_points // 4
         self.n_layers = 3
@@ -192,7 +191,7 @@ class ActivationsDataset(Dataset):
             args = self.labels_type[len("actions_for_probe") + 1 :].split("_")
             action = int(args[0])
             if len(args) > 1:
-                self.grid_wise = bool(args[1])
+                self.grid_wise = args[1] == "True"
             gt_output = ds_cache.actions_for_probe(action, grid_wise=self.grid_wise)
         elif self.labels_type == "agent_in_a_cycle":
             gt_output = ds_cache.agent_in_a_cycle()
@@ -421,7 +420,7 @@ class TrainProbeConfig(ABCCommandConfig):
     policy_path: Optional[str] = None
     eval_epoch_interval: int = 10
     eval_only: bool = False
-    eval_cache_path: Path = Path("/training/.sokoban_cache")
+    eval_cache_path: Path = BOXOBAN_CACHE
     eval_split: Literal["train", "valid", "test"] = "valid"
     eval_difficulty: Literal["unfiltered", "medium", "hard"] = "unfiltered"
     eval_episodes: int = 20
@@ -585,9 +584,12 @@ def train_with_sklearn(args: TrainProbeConfig, eval_cfg: EnvConfig, eval_env, ru
             for example in train_X
         ]
     )
-    if len(train_X.shape) == 4:  # everything is grid-wise now
-        train_y = train_y.repeat((train_X.shape[-1] * train_X.shape[-2],))
-        train_X = np.transpose(train_X, (2, 3, 0, 1)).reshape(-1, train_X.shape[1])
+    if len(train_X.shape) == 4:
+        if acts_ds.grid_wise:
+            train_y = train_y.repeat((train_X.shape[-1] * train_X.shape[-2],))
+            train_X = np.transpose(train_X, (2, 3, 0, 1)).reshape(-1, train_X.shape[1])
+        else:
+            train_X = train_X.reshape(train_X.shape[0], -1)
 
     if acts_ds.multioutput:
         assert len(train_X.shape) == 2 and len(train_y.shape) == 2 and train_y.shape == (len(train_X), 4)
@@ -610,8 +612,11 @@ def train_with_sklearn(args: TrainProbeConfig, eval_cfg: EnvConfig, eval_env, ru
         ]
     )
     if len(test_X.shape) == 4:
-        test_y = test_y.repeat((test_X.shape[-1] * test_X.shape[-2],))
-        test_X = np.transpose(test_X, (2, 3, 0, 1)).reshape(-1, test_X.shape[1])
+        if acts_ds.grid_wise:
+            test_y = test_y.repeat((test_X.shape[-1] * test_X.shape[-2],))
+            test_X = np.transpose(test_X, (2, 3, 0, 1)).reshape(-1, test_X.shape[1])
+        else:
+            test_X = test_X.reshape(test_X.shape[0], -1)
     if acts_ds.multioutput:
         assert len(test_X.shape) == 2 and len(test_y.shape) == 2 and test_y.shape == (len(test_X), 4)
     else:
