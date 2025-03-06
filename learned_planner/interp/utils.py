@@ -1,6 +1,8 @@
 import pathlib
 import pickle
+import re
 import subprocess
+import warnings
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Tuple, Union
 
@@ -22,12 +24,14 @@ from learned_planner.policies import ConvLSTMPolicyConfig, NetArchConfig, downlo
 @dataclass
 class PlayLevelOutput:
     obs: th.Tensor
+    act_dist: th.Tensor
     acts: th.Tensor
     logits: th.Tensor
     rewards: th.Tensor
     lengths: th.Tensor
     solved: th.Tensor
     cache: dict[str, th.Tensor]
+    info: dict[str, Any]
     probe_outs: Optional[list[np.ndarray]] = None
     sae_outs: Optional[th.Tensor] = None
 
@@ -137,8 +141,18 @@ def copy_params_from_jax(torch_policy, jax_params, jax_args):
     for th_key, jax_key in zip(th_keys, jax_keys):
         mlp_weights = np.asarray(jax_get(f"{jax_key}.kernel", jax_params).transpose())
         mlp_bias = np.asarray(jax_get(f"{jax_key}.bias", jax_params))
-        getattr(torch_policy, th_key).weight.data.copy_(th.tensor(mlp_weights))
-        getattr(torch_policy, th_key).bias.data.copy_(th.tensor(mlp_bias))
+
+        loading_comp = getattr(torch_policy, th_key)
+        try:
+            loading_comp.weight.data.copy_(th.tensor(mlp_weights))
+            loading_comp.bias.data.copy_(th.tensor(mlp_bias))
+        except RuntimeError:  # we added a NOOP action to the env which is the previously trained model doesn't have
+            assert loading_comp.weight.data.shape[0] == mlp_weights.shape[0] + 1
+            loading_comp.weight.data[:-1].copy_(th.tensor(mlp_weights))
+            loading_comp.bias.data[:-1].copy_(th.tensor(mlp_bias))
+
+            loading_comp.weight.data[-1].fill_(0)
+            loading_comp.bias.data[-1].fill_(-1000)  # large negative value to make the NOOP action not selected
 
 
 def load_jax_model_to_torch(path, env_cfg):
@@ -168,7 +182,7 @@ def get_boxoban_cfg(
     num_envs: int = 1,
     episode_steps=80,
     difficulty: str = "medium",
-    split: str = "valid",
+    split: Optional[str] = "valid",
     load_sequentially_envpool=True,
     use_envpool: Optional[bool] = None,
     boxoban_cache=BOXOBAN_CACHE,
@@ -255,7 +269,7 @@ def prepare_cache_values(
     return cache_values
 
 
-def predict(cache, probe, train_on, step: int, internal_steps: bool = False, is_concatenated_cache=False):
+def predict(cache, probe, train_on, step: int, internal_steps: bool = False, is_concatenated_cache=False, logits=False):
     """Predict the probe on the activations of the policy.
 
     Args:
@@ -281,8 +295,11 @@ def predict(cache, probe, train_on, step: int, internal_steps: bool = False, is_
         stack_cache_values = th.stack(cache_values, dim=0)
         stack_cache_values = stack_cache_values.permute(0, 1, 3, 4, 2)
         stack_cache_values = stack_cache_values.reshape(-1, stack_cache_values.shape[-1]).cpu()
-        probe_preds = probe.predict(stack_cache_values)
-        if isinstance(probe, MultiOutputClassifier):
+        if logits:
+            probe_preds = probe.decision_function(stack_cache_values)
+        else:
+            probe_preds = probe.predict(stack_cache_values)
+        if isinstance(probe, MultiOutputClassifier) or logits:
             probe_preds = probe_preds.reshape(s, b, h, w, -1)
         else:
             probe_preds = probe_preds.reshape(s, b, h, w)
@@ -300,8 +317,12 @@ def predict(cache, probe, train_on, step: int, internal_steps: bool = False, is_
         stack_cache_values = th.stack(cache_values, dim=0)
         # stack_cache_values = stack_cache_values.reshape(*stack_cache_values.shape[:2], -1)
         stack_cache_values = stack_cache_values.reshape(-1, stack_cache_values.shape[-1]).cpu()
-        probe_preds = probe.predict(stack_cache_values)
-        probe_preds = probe_preds.reshape(s, b)
+        if logits:
+            probe_preds = probe.decision_function(stack_cache_values)
+            probe_preds = probe_preds.reshape(s, b, -1)
+        else:
+            probe_preds = probe.predict(stack_cache_values)
+            probe_preds = probe_preds.reshape(s, b)
     if is_concatenated_cache:
         probe_preds = probe_preds.squeeze()
     return probe_preds
@@ -362,14 +383,17 @@ def play_level(
     reset_opts={},
     probes=[],
     probe_train_ons=[],
+    probe_logits=False,
     sae=None,
     thinking_steps=0,
     max_steps=120,
     internal_steps=False,
     fwd_hooks=None,
-    hook_steps=-1,
+    hook_steps: Union[list[int], int] = -1,
     names_filter=None,
-):
+    obs_reference=None,  # updates current observation to this variable. Used to get base features for interpretable_forward
+    use_interpretable_forward: bool = False,
+) -> PlayLevelOutput:
     """Execute the policy on the environment and the probe on the policy's activations.
 
     Args:
@@ -385,12 +409,13 @@ def play_level(
     """
     assert len(probe_train_ons) == len(probes)
     try:
-        start_obs = env.reset(options=reset_opts)[0]
+        start_obs, info = env.reset(options=reset_opts)
     except:  # noqa
-        start_obs = env.reset()[0]
+        start_obs, info = env.reset()
     device = policy_th.device
     start_obs = th.tensor(start_obs, device=device)
     all_obs = [start_obs]
+    all_act_dist = []
     all_acts = []
     all_logits = []
     all_rewards = []
@@ -407,6 +432,8 @@ def play_level(
     obs = start_obs
     r, d, t = [0.0], th.tensor([False] * N, dtype=th.bool, device=device), th.tensor([False] * N, dtype=th.bool, device=device)
     for i in range(max_steps):
+        if obs_reference is not None:
+            obs_reference[:] = obs.cpu()
         (distribution, state), cache = run_fn_with_cache(
             policy_th,
             "get_distribution",
@@ -416,12 +443,26 @@ def play_level(
             # return_repeats=False,
             fwd_hooks=fwd_hooks if (hook_steps == -1) or (i in hook_steps) else None,
             names_filter=names_filter,
+            feature_extractor_kwargs={"use_interpretable_forward": use_interpretable_forward},
         )
         best_act = distribution.get_actions(deterministic=True)
+        all_act_dist.append(distribution.distribution.probs.detach())
         all_acts.append(best_act)
         all_logits.append(distribution.distribution.logits.detach())
+        all_cache.append(cache)
         if i >= thinking_steps:
-            obs, r, d, t, _ = env.step(best_act.cpu().numpy())
+            try:
+                obs, r, d, t, _ = env.step(best_act.cpu().numpy())
+            except ValueError as e:
+                if str(e) == "Output array is the wrong shape":
+                    warnings.warn(str(e))
+                    episode_lengths[~eps_solved] += 1
+                    # if single env, then set the episode as done as this error
+                    # occurs on a new level with a different shape
+                    eps_done |= th.ones(N, dtype=th.bool) if N == 1 else th.zeros(N, dtype=th.bool)
+                    break
+                else:
+                    raise e
             d, t = th.tensor(d), th.tensor(t)
             obs = th.tensor(obs, device=device)
             eps_done |= d | t
@@ -429,11 +470,9 @@ def play_level(
             eps_solved |= d
 
             all_rewards.append(r)
-        all_obs.append(obs)
-        all_cache.append(cache)
 
         for pidx, (probe, probe_train_on) in enumerate(zip(probes, probe_train_ons)):
-            probe_out = predict(cache, probe, probe_train_on, step=0, internal_steps=internal_steps)
+            probe_out = predict(cache, probe, probe_train_on, step=0, internal_steps=internal_steps, logits=probe_logits)
             if N == 1:
                 probe_out = probe_out.squeeze(1)
             if not internal_steps:
@@ -442,19 +481,146 @@ def play_level(
         if sae:
             sae_acts = encode_with_sae(sae, cache, internal_steps=internal_steps)
             all_sae_outs.append(sae_acts.squeeze(1) if internal_steps else sae_acts.squeeze(0).squeeze(0))  # type: ignore
-        if eps_done.all().item():
+
+        if eps_done.all().item() or i == max_steps - 1:
             break
+        all_obs.append(obs)
     return PlayLevelOutput(
-        obs=th.stack(all_obs[:-1]).cpu(),
+        obs=th.stack(all_obs).cpu(),
+        act_dist=th.stack(all_act_dist),
         acts=th.stack(all_acts),
         logits=th.stack(all_logits),
         rewards=th.tensor(np.array(all_rewards)),
         lengths=episode_lengths,
         solved=eps_solved,
-        cache={k: th.stack([cache[k].cpu() for cache in all_cache]) for k in all_cache[0].keys()},
+        cache=join_cache_across_steps(all_cache),
+        info=info,
         probe_outs=[np.stack(probe_out) for probe_out in all_probe_outs],
         sae_outs=th.stack(all_sae_outs) if sae else None,
     )
+
+
+def get_cache_and_probs(
+    obs,
+    model,
+    fwd_hooks=None,
+    hook_steps=-1,
+    names_filter=None,
+    return_repeats=False,
+    use_interpretable_forward=False,
+    use_action_channels=False,
+):
+    if isinstance(obs, np.ndarray):
+        obs = th.tensor(obs)
+    if len(obs.shape) == 3:
+        obs = obs.unsqueeze(0).unsqueeze(0)
+    elif len(obs.shape) == 4:
+        raise ValueError(f"Expected 3D (single obs) or 5D (batched, sequenced obs), got {obs.shape}")
+
+    seq_len, num_envs, *_ = obs.shape
+
+    zero_carry = model.recurrent_initial_state(num_envs)
+    eps_start = th.zeros((seq_len, num_envs), dtype=th.bool)
+
+    if fwd_hooks is not None and len(fwd_hooks) > 0:
+        if not re.match(r".*\.\d+\.\d+$", fwd_hooks[0][0]):
+            warnings.warn("fwd_hooks should be of the form `hook_name.{pos}.{tick}`")
+
+    with th.no_grad():
+        (distribution, state), cache = run_fn_with_cache(
+            model,
+            "get_distribution",
+            obs,
+            zero_carry,
+            eps_start,
+            fwd_hooks=fwd_hooks if (hook_steps == -1) else None,
+            names_filter=names_filter,
+            feature_extractor_kwargs={
+                "return_repeats": return_repeats,
+                "use_interpretable_forward": use_interpretable_forward,
+            },
+        )
+        log_probs = distribution.distribution.logits
+        cache = join_cache_across_steps([cache])
+        if use_action_channels:
+            action_channels = [29, 8, 27, 3]
+            log_probs = cache["features_extractor.cell_list.2.hook_interpretable_forward"][2::3, :, action_channels]
+            log_probs[:, :, 2] *= -1  # left action is negative
+            log_probs = th.tensor(log_probs.sum(axis=(-1, -2)))
+    return cache, log_probs
+
+
+def join_cache_across_steps(cache_list, re_hook_filter=""):
+    """Finds the cache items, whose HookPoint names are of the form
+    `prefix.{Pos}.{Repeat}`. Then, it stacks all of the tensors from those parts
+    of the cache, so that the 0th dimension is now of size (pos * repeat).
+
+    Args:
+        cache_list: a list of caches, which optionally contain keys of the form
+        `prefix.{Pos}.{Repeat}`
+        re_hook_filter: a regex string to filter the hook names.
+    Returns:
+        a single cache, whose arrays are [pos*repeat, ...]-sized, with the
+        cache entries in order.
+    """
+    new_cache = [{} for _ in range(len(cache_list))]
+    for i, cache in enumerate(cache_list):
+        for k, v in cache.items():
+            match = re.match(rf"(.*{re_hook_filter})\.(\d+)\.(\d+)$", k)
+            v = v.cpu().numpy() if isinstance(v, th.Tensor) else v
+            if match is not None:
+                prefix, pos, rep = match.groups()
+                if prefix not in new_cache[i]:
+                    new_cache[i][prefix] = [(int(pos), int(rep), v[None, ...])]
+                else:
+                    new_cache[i][prefix].append((int(pos), int(rep), v[None, ...]))
+            elif re.match(rf"(.*{re_hook_filter})$", k) is not None:
+                new_cache[i][k] = [(0, 0, v)]
+    final_cache = {}
+    for k in new_cache[0].keys():
+        for lx in new_cache:
+            assert sorted(lx[k], key=lambda e: (e[0], e[1])) == lx[k]
+        final_cache[k] = np.concatenate([x for lx in new_cache for _, _, x in sorted(lx[k], key=lambda e: (e[0], e[1]))])
+    return final_cache
+
+
+def parse_level(level: str) -> dict[str, list[tuple[int, int]] | tuple[int, int]]:
+    """Parse the level string into a dictionary of objects and their positions.
+
+    Args:
+        level (str): Level string.
+
+    Returns:
+        dict[str, list[tuple[int, int]]]: Dictionary of objects and their positions.
+    """
+    lines = level.strip().split("\n")
+    assert all(len(line) == len(lines[0]) for line in lines)
+
+    objects: dict[str, Any] = dict(walls=[], boxes=[], targets=[])
+    for i, row in enumerate(level.split("\n")):
+        for j, char in enumerate(row):
+            if char in "#":
+                objects["walls"].append((i, j))
+            if char in "$*":
+                objects["boxes"].append((i, j))
+            if char in "@+":
+                objects["player"] = (i, j)
+            if char in ".*+":
+                objects["targets"].append((i, j))
+    return objects
+
+
+def pad_level(level: str, width: int = 10, height: int = 10) -> str:
+    lines = level.strip().split("\n")
+
+    padding = "#" * width
+    new_lines = [(lines + padding)[:width] for lines in lines]
+    while len(new_lines) < height:
+        new_lines.append(padding)
+    out = "\n".join(new_lines)
+    print("Padded level to:")
+    print(out)
+    return out
 
 
 def run_fn_with_cache(

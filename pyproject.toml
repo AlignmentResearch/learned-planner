@@ -96,6 +96,8 @@ dependencies = [
     "names-generator ~=0.2.0",
     "torch ~=2.4.1",
     "torchvision ~=0.19.1",
+    "jax ==0.4.34",
+    "typeguard",
     "stable_baselines3 @ git+https://github.com/AlignmentResearch/learned-planners-stable-baselines3.git",
     "gym_sokoban @ git+https://github.com/AlignmentResearch/gym-sokoban.git",
     "farconf @ git+https://github.com/AlignmentResearch/farconf.git",
