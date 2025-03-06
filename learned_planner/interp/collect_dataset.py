@@ -1017,7 +1017,7 @@ def collect_dataset(model_path, args):
         max_episode_steps = 80
         n_eval_episodes = args.n_eval_episodes
         n_steps_to_think = [int(x) for x in args.n_steps_to_think.split(",")] if args.n_steps_to_think else [0]
-        n_envs = 128
+        n_envs = args.batch_size
         device = th.device(args.device)
     print("Device:", device)
 
@@ -1065,7 +1065,8 @@ if __name__ == "__main__":
     parser.add_argument("-d", "--device", type=str, default="cuda" if th.cuda.is_available() else "cpu")
     parser.add_argument("-s", "--split", type=str, default="valid")
     parser.add_argument("-l", "--difficulty", type=str, default="medium")
-    parser.add_argument("-n", "--n_eval_episodes", type=int, default=5000)
+    parser.add_argument("-n", "--n_eval_episodes", type=int, default=1000)
+    parser.add_argument("-b", "--batch_size", type=int, default=100, help="Number of envs (& episodes) to process in parallel")
     parser.add_argument("-o", "--output_path", type=str, default=".")
     parser.add_argument(
         "-k",
