@@ -4,27 +4,28 @@ import dataclasses
 import pathlib
 import pickle
 import warnings
+from collections import defaultdict
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import gymnasium as gym
 import numpy as np
 import torch as th
-from gym_sokoban.envs.sokoban_env import CHANGE_COORDINATES
+from gym_sokoban.envs.sokoban_env import CHANGE_COORDINATES as CHANGE_COORDINATES_SOKOBAN
 from stable_baselines3.common import type_aliases
 from stable_baselines3.common.pytree_dataclass import tree_index, tree_map
 from stable_baselines3.common.type_aliases import TorchGymObs
-from stable_baselines3.common.vec_env import (
-    DummyVecEnv,
-    VecEnv,
-    VecTransposeImage,
-)
+from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, VecTransposeImage
 from stable_baselines3.common.vec_env.util import obs_as_tensor
 from tqdm import tqdm
 
-from learned_planner.convlstm import ConvLSTMOptions
-from learned_planner.environments import BoxobanConfig, EnvpoolSokobanVecEnvConfig
+from learned_planner.environments import (
+    BoxobanConfig,
+    EnvpoolSokobanVecEnvConfig,
+    EnvpoolVecEnvConfig,
+    MiniPacManConfig,
+)
 from learned_planner.interp import alternative_plans
-from learned_planner.interp.render_svg import BOX, BOX_ON_TARGET, FLOOR, PLAYER, PLAYER_ON_TARGET, TARGET
+from learned_planner.interp.render_svg import BOX, BOX_ON_TARGET, FLOOR, PLAYER, PLAYER_ON_TARGET, TARGET, WALL
 from learned_planner.interp.utils import join_cache_across_steps, load_jax_model_to_torch
 from learned_planner.policies import download_policy_from_huggingface
 
@@ -35,10 +36,128 @@ NUM_BOXES = 4  # Number of boxes and targets in the Sokoban environment
 EMPTY_SQUARE = -1  # Value for a grid cell that does not contain a box or target
 
 
+ENV_AGENT_RGB = defaultdict(
+    lambda: [PLAYER, PLAYER_ON_TARGET],
+    {
+        "Boxoban-Val-v1": [PLAYER, PLAYER_ON_TARGET],
+        "Sokoban-v0": [PLAYER, PLAYER_ON_TARGET],
+        "ChaserHard-v0": [np.array([74, 54, 245])],
+        "ChaserEasy-v0": [np.array([74, 54, 245])],
+        "MiniPacMan-v0": [np.array([0, 255, 0])],
+    },
+)
+ENV_WALLS_RGB = defaultdict(
+    lambda: [WALL],
+    {
+        "Boxoban-Val-v1": [WALL],
+        "Sokoban-v0": [WALL],
+        # "ChaserHard-v0": [np.array([74, 54, 245])],
+        # "ChaserEasy-v0": [np.array([74, 54, 245])],
+        "MiniPacMan-v0": [np.array([255, 255, 255])],
+    },
+)
+
+ENV_OBS_SHAPE = defaultdict(
+    lambda: (3, 10, 10),
+    {
+        "Boxoban-Val-v1": (3, 10, 10),
+        "Sokoban-v0": (3, 10, 10),
+        "ChaserHard-v0": (3, 64, 64),
+        "ChaserEasy-v0": (3, 64, 64),
+        "MazeHard-v0": (3, 64, 64),
+        "MazeEasy-v0": (3, 64, 64),
+        "MinerHard-v0": (3, 64, 64),
+        "MinerEasy-v0": (3, 64, 64),
+        "MiniPacMan-v0": (3, 15, 19),
+    },
+)
+
+ENV_SYMBOLIC_SHAPE = defaultdict(
+    lambda: (10, 10),
+    {
+        "Boxoban-Val-v1": (10, 10),
+        "Sokoban-v0": (10, 10),
+        "ChaserHard-v0": (13, 13),
+        "ChaserEasy-v0": (11, 11),
+        "MazeHard-v0": (25, 25),
+        "MazeEasy-v0": (15, 15),
+        "MinerHard-v0": (20, 20),
+        "MinerEasy-v0": (10, 10),
+        "MiniPacMan-v0": (15, 19),
+    },
+)
+
+# procgen
+# void BasicAbstractGame::set_action_xy(int move_act) {
+#     action_vx = move_act / 3 - 1;
+#     action_vy = move_act % 3 - 1;
+#     action_vrot = 0;
+# }
+CHASER_CHANGE_COORDINATES = {
+    **{i: (-(i % 3 - 1), i // 3 - 1) for i in range(9)},
+    # right, left, up, down, up-left, up-right corresponding to DAWSQE
+    **{9: (0, 1), 10: (0, -1), 11: (-1, 0), 12: (1, 0), 13: (-1, -1), 14: (1, 1)},
+}
+
+ENV_CHANGE_COORDINATES = defaultdict(
+    lambda: CHANGE_COORDINATES_SOKOBAN,
+    {
+        "Boxoban-Val-v1": CHANGE_COORDINATES_SOKOBAN,
+        "Sokoban-v0": CHANGE_COORDINATES_SOKOBAN,
+        "ChaserHard-v0": CHASER_CHANGE_COORDINATES,
+        "ChaserEasy-v0": CHASER_CHANGE_COORDINATES,
+    },
+)
+
+
+def downsample(obs: th.Tensor, h: int, w: int, avg=False) -> th.Tensor:
+    """Downsample the observation to the given height and width using max pooling.
+
+    Args:
+        obs (torch.Tensor): Observation tensor. Expected shape is (..., H, W).
+        h (int): Target height.
+        w (int): Target width.
+
+    Returns:
+        torch.Tensor: Downsampled observation tensor with shape (..., h, w).
+    """
+    obs = obs.float()
+    original_shape = obs.shape
+    H_in, W_in = original_shape[-2:]
+
+    if H_in == h and W_in == w:
+        return obs
+
+    assert H_in >= h and W_in >= w, f"Target size ({h},{w}) must be smaller than or equal to input size ({H_in},{W_in})"
+    assert h > 0 and w > 0, "Target height and width must be positive"
+
+    # Use AdaptiveMaxPool2d which automatically calculates kernel size and stride
+    # It expects input of shape (N, C, H, W) or (C, H, W)
+    pool_layer = (th.nn.AdaptiveAvgPool2d if avg else th.nn.AdaptiveMaxPool2d)((h, w))
+
+    original_ndim = obs.ndim
+
+    if original_ndim < 3:
+        obs = obs.unsqueeze(0)
+
+    leading_dims = original_shape[:-2]  # Capture all dimensions before H, W
+    if original_ndim > 4:
+        raise ValueError(f"Unsupported input tensor dimension after initial checks: {obs.ndim}")
+
+    pooled_obs = pool_layer(obs)
+
+    # Reshape back to restore original leading dimensions
+    if original_ndim < 3:
+        final_shape = leading_dims + (h, w)
+        pooled_obs = pooled_obs.view(final_shape)
+
+    return pooled_obs
+
+
 @dataclasses.dataclass
 class DatasetStore:
     store_path: Optional[pathlib.Path]
-    obs: th.Tensor  # Observations. Dimension[steps or steps*layers, 3 RGB, 10, 10]
+    obs: th.Tensor  # Observations. Dimension[steps or steps*layers, 3 RGB, H, W]
     rewards: Optional[th.Tensor] = None
     solved: bool = False
     pred_actions: Optional[th.Tensor] = None
@@ -46,6 +165,7 @@ class DatasetStore:
     model_cache: Dict[str, np.ndarray] = dataclasses.field(default_factory=dict)
     file_idx: Optional[int] = None
     level_idx: Optional[int] = None
+    env_id: str = "Boxoban-Val-v1"
 
     def __post_init__(self):
         if self.rewards is not None:
@@ -53,19 +173,28 @@ class DatasetStore:
                 warnings.warn(f"Obs and rewards shape not matching: {self.obs.shape[0]} != {self.rewards.shape[0]}")
         if self.pred_values is not None and self.pred_actions is not None:
             assert self.pred_actions.shape[0] == self.pred_values.shape[0]
-        for k, v in self.model_cache.items():
-            if "hook_pre_model" in k:
-                assert self.obs.shape[0] == v.shape[0], f"{self.obs.shape[0]} != {v.shape[0]} for {k}"
-            elif self.pred_actions is not None:
-                assert self.pred_actions.shape[0] == len(v), f"{self.pred_actions.shape[0]} != {v.shape}[0] for {k}"
 
         assert (self.file_idx is None) == (self.level_idx is None), "file_idx and level_idx must be provided together"
 
     def save(self):
         self.cpu()
         assert self.store_path is not None
+        # Save as dict to avoid multiprocessing pickle issues
+        data_dict = {
+            'store_path': self.store_path,
+            'obs': self.obs,
+            'rewards': self.rewards,
+            'solved': self.solved,
+            'pred_actions': self.pred_actions,
+            'pred_values': self.pred_values,
+            'model_cache': self.model_cache,
+            'file_idx': self.file_idx,
+            'level_idx': self.level_idx,
+            'env_id': self.env_id,
+            '_class_name': 'DatasetStore'  # Marker for reconstruction
+        }
         with open(self.store_path, "wb") as f:
-            pickle.dump(self, f)
+            pickle.dump(data_dict, f)
 
     def cpu(self):
         self.obs = self.obs.cpu()
@@ -94,13 +223,26 @@ class DatasetStore:
         return int(repeats)
 
     @staticmethod
-    def load(store_path: str):
+    def load(store_path: str) -> "DatasetStore":
         with open(store_path, "rb") as f:
-            return pickle.load(f)
+            data = pickle.load(f)
+        
+        # Handle both old format (direct DatasetStore) and new format (dict)
+        if isinstance(data, dict) and data.get('_class_name') == 'DatasetStore':
+            # Reconstruct from dict
+            ds = DatasetStore.__new__(DatasetStore)
+            for key, value in data.items():
+                if key != '_class_name':
+                    setattr(ds, key, value)
+            return ds
+        else:
+            assert isinstance(data, DatasetStore), f"Expected DatasetStore, got {type(data)}"
+            return data
 
     @staticmethod
-    def load_from_play_output(play_output, batch_idx: int = 0):
+    def load_from_play_output(play_output, batch_idx: int = 0, internal_steps: bool = False) -> "DatasetStore":
         length = play_output.lengths[batch_idx]
+
         return DatasetStore(
             store_path=None,
             obs=play_output.obs[:length, batch_idx],
@@ -108,7 +250,7 @@ class DatasetStore:
             solved=play_output.solved[batch_idx],
             pred_actions=play_output.acts[:length, batch_idx],
             pred_values=None,
-            model_cache={k: v[:length, batch_idx].numpy() for k, v in play_output.cache.items()},
+            model_cache={k: v[: (3 if internal_steps else 1) * length, batch_idx] for k, v in play_output.cache.items()},
         )
 
     def actual_steps(
@@ -175,11 +317,17 @@ class DatasetStore:
         if i < 0 or i >= self.obs[0].shape[1] or j < 0 or j >= self.obs[0].shape[2]:
             return True
         # If, in step 0, all RGB values are 0, this is a wall.
-        return self.obs[0, :, i, j].eq(0).all().item()  # type: ignore
+        return self.obs[0, :, i, j].eq(th.tensor(ENV_WALLS_RGB[self.env_id])).all().item()  # type: ignore
 
-    def is_box(self, i: int, j: int) -> bool:
+    def is_box(self, i: int, j: int, env_step: int = 0) -> bool:
         # If, in step 0, all RGB values are 0, this is a wall.
-        return self.obs[0, :, i, j].eq(th.tensor(BOX)).all().item()
+        box_only = self.obs[env_step, :, i, j].eq(th.tensor(BOX)).all().item()  # type: ignore
+        box_and_target = self.obs[env_step, :, i, j].eq(th.tensor(BOX_ON_TARGET)).all().item()  # type: ignore
+        return box_only or box_and_target  # type: ignore
+
+    def is_target(self, i: int, j: int) -> bool:
+        # If, in step 0, all RGB values are 0, this is a wall.
+        return self.obs[0, :, i, j].eq(th.tensor(TARGET)).all().item()  # type: ignore
 
     def is_next_to_a_wall(self, i: int, j: int, box_is_wall: bool = False) -> bool:
         is_wall = any(self.is_wall(x, y) for x, y in [(i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)])
@@ -218,7 +366,7 @@ class DatasetStore:
             action = int(self.pred_actions[self.to_hidden_idx(t)].item())
             # twice away from agent when putting box on target
             multiplier = 1 if th.isclose(self.rewards[t], th.tensor(BOX_OUT_PENALTY, dtype=th.float64)) else 2
-            target_pos = agent_pos + multiplier * th.tensor(CHANGE_COORDINATES[action])
+            target_pos = agent_pos + multiplier * th.tensor(CHANGE_COORDINATES_SOKOBAN[action])
             target_positions.append(target_pos)
             repeats.append(t - last_time)
             last_time = t
@@ -256,19 +404,28 @@ class DatasetStore:
         return th.stack(agent_positions)
 
     def get_agent_position_per_step(self, obs, return_map: bool = False) -> th.Tensor:
-        assert obs.shape == (3, 10, 10)
-        agent_pos = ((obs[0] == 160) | (obs[0] == 219)) & (obs[1] == 212) & (obs[2] == 56)
+        assert len(obs.shape) == 3 and obs.shape[0] == 3, f"Expected (3, h, w), got {obs.shape}"
+        agent_pos = th.stack([self.color_detector(obs, th.tensor(color)) for color in ENV_AGENT_RGB[self.env_id]])
+        agent_pos = th.any(agent_pos, dim=0)
+        agent_pos = downsample(agent_pos, *ENV_SYMBOLIC_SHAPE[self.env_id])
         if return_map:
             return agent_pos
         agent_pos = th.where(agent_pos)
-        return th.stack(agent_pos).squeeze()
+        return th.stack(agent_pos)[:, 0]  # take first detected pos of color
 
-    def agents_future_position_map(self, include_current_position: bool = False) -> th.Tensor:
+    def agents_future_position_map(self, include_current_position: bool = False, horizon: int = -1) -> th.Tensor:
+        check_key = "features_extractor.cell_list.0.hook_h"
+        if self.model_cache.get(check_key, None) is not None:
+            h, w = self.model_cache[check_key].shape[-2:]
+            assert (h, w) == ENV_SYMBOLIC_SHAPE[self.env_id], f"Expected {ENV_SYMBOLIC_SHAPE[self.env_id]}, got {(h, w)}"
+        else:
+            h, w = ENV_SYMBOLIC_SHAPE[self.env_id]
         agent_positions = self.get_agent_positions()
-        future_positions_map = th.zeros((len(agent_positions), 10, 10), dtype=th.int64)
+        future_positions_map = th.zeros((len(agent_positions), h, w), dtype=th.int64)
         for i, pos in enumerate(agent_positions):
             upto_idx = i + 1 if include_current_position else i
-            future_positions_map[:upto_idx, pos[0], pos[1]] = 1
+            from_idx = 0 if horizon == -1 else max(0, upto_idx - horizon)
+            future_positions_map[from_idx:upto_idx, pos[0], pos[1]] = 1
         return future_positions_map
 
     def agents_future_direction_map(
@@ -279,17 +436,27 @@ class DatasetStore:
         variable_boxes: bool = False,
         return_timestep_map: bool = False,
         future_n_steps: Optional[int] = None,
-    ) -> th.Tensor:
+        agent_exclusive: bool = False,
+    ) -> Union[th.Tensor, Tuple[th.Tensor, th.Tensor]]:
+        check_key = "features_extractor.cell_list.0.hook_h"
+        if self.model_cache.get(check_key, None) is not None:
+            h, w = self.model_cache[check_key].shape[-2:]
+            assert (h, w) == ENV_SYMBOLIC_SHAPE[self.env_id], f"Expected {ENV_SYMBOLIC_SHAPE[self.env_id]}, got {(h, w)}"
+        else:
+            h, w = ENV_SYMBOLIC_SHAPE[self.env_id]
         agent_positions = self.get_agent_positions()
-        init_val, shape, dtype = -1, [len(agent_positions), 10, 10], th.int32
+        box_positions = []
+        if agent_exclusive:
+            box_positions = self.get_box_positions(variable_boxes=variable_boxes)
+        init_val, shape, dtype = -1, [len(agent_positions), h, w], th.int32
         if multioutput:
             shape.append(4)
             init_val, dtype = False, th.bool
         future_direction_map = init_val * th.ones(shape, dtype=dtype)
-        future_direction_timestep_map = -1 * th.ones((len(agent_positions), 10, 10), dtype=th.int32)
-        inv_change_coordinates = {tuple(v): k for k, v in CHANGE_COORDINATES.items()}
+        future_direction_timestep_map = -1 * th.ones((len(agent_positions), h, w), dtype=th.int32)
+        inv_change_coordinates = {tuple(v): k for k, v in ENV_CHANGE_COORDINATES[self.env_id].items()}
         correct_indices = range(len(agent_positions) - 1) if move_out else range(1, len(agent_positions))
-        start_idx_for_pos = th.zeros((10, 10), dtype=th.int64)
+        start_idx_for_pos = th.zeros((h, w), dtype=th.int64)
         upto_idx = 0
         for i in correct_indices:
             pos = agent_positions[i]
@@ -301,21 +468,30 @@ class DatasetStore:
             if th.all(change == 0):
                 continue
 
+            if agent_exclusive and (agent_positions[i + 1] == box_positions[i]).all(dim=1).any():
+                continue
+
             if multioutput:
                 from_idx = 0 if future_n_steps is None else max(0, upto_idx - future_n_steps)
                 future_direction_map[from_idx:upto_idx, *pos, inv_change_coordinates[*change.tolist()]] = True
             else:
                 from_idx = start_idx_for_pos[*pos].item()
                 from_idx = from_idx if future_n_steps is None else max(0, from_idx, upto_idx - future_n_steps)
-                future_direction_map[from_idx:upto_idx, *pos] = inv_change_coordinates[*change.tolist()]
+                try:
+                    future_direction_map[from_idx:upto_idx, *pos] = inv_change_coordinates[*change.tolist()]
+                except KeyError:
+                    print(
+                        f"KeyError. change: {change}, pos: {pos}, agent_positions: {agent_positions[i + 1]}, from_idx: {from_idx}, upto_idx: {upto_idx}"
+                    )
+                    raise AssertionError
                 start_idx_for_pos[*pos] = upto_idx
             future_direction_timestep_map[from_idx:upto_idx, *pos] = i
-        if self.solved:
+        if self.is_env_sokoban and self.solved and not agent_exclusive:
             last_agent_pos = agent_positions[-1]
             target_positions = self.get_target_positions(variables_boxes=variable_boxes)
             last_box_positions = self.get_box_positions(idx=-1, variable_boxes=variable_boxes)
             found = False
-            for dir_idx, direction in enumerate(CHANGE_COORDINATES.values()):
+            for dir_idx, direction in enumerate(ENV_CHANGE_COORDINATES[self.env_id].values()):
                 direction = th.tensor(direction)
                 final_agent_pos = last_agent_pos + direction
                 final_target_pos = final_agent_pos + direction
@@ -475,6 +651,10 @@ class DatasetStore:
 
         return change1, change2
 
+    @property
+    def is_env_sokoban(self) -> bool:
+        return "boxoban" in self.env_id.lower() or "sokoban" in self.env_id.lower()
+
     def boxes_future_direction_map(
         self,
         move_out: bool = True,
@@ -484,6 +664,7 @@ class DatasetStore:
         return_timestep_map: bool = False,
         future_n_steps: Optional[int] = None,
     ) -> Union[th.Tensor, Tuple[th.Tensor, th.Tensor]]:
+        assert self.is_env_sokoban, f"Expected Boxoban or Sokoban, got {self.env_id}"
         box_positions = self.get_box_positions(variable_boxes=variable_boxes)
         init_val, shape, dtype = -1, [len(box_positions), 10, 10], th.int32
         if multioutput:
@@ -491,7 +672,7 @@ class DatasetStore:
             init_val, dtype = False, th.bool
         future_direction_map = init_val * th.ones(shape, dtype=dtype)
         future_direction_timestep_map = -1 * th.ones((len(box_positions), 10, 10), dtype=th.int32)
-        inv_change_coordinates = {tuple(v): k for k, v in CHANGE_COORDINATES.items()}
+        inv_change_coordinates = {tuple(v): k for k, v in CHANGE_COORDINATES_SOKOBAN.items()}
         correct_indices = range(len(box_positions) - 1) if move_out else range(1, len(box_positions))
         start_idx_for_pos = th.zeros((10, 10), dtype=th.int64)
         for i in correct_indices:
@@ -566,7 +747,7 @@ class DatasetStore:
                 next_pos = next_box_pos.pop()
 
                 box_title = label_map[i, curr_pos[0], curr_pos[1]]
-                assert box_title != EMPTY_SQUARE, f"Expected box title in step {i-1} location {curr_pos[0]}, {curr_pos[1]}"
+                assert box_title != EMPTY_SQUARE, f"Expected box title in step {i - 1} location {curr_pos[0]}, {curr_pos[1]}"
 
                 # Move the box title from the previous position to the new position
                 label_map[i + 1, curr_pos[0], curr_pos[1]] = EMPTY_SQUARE
@@ -609,6 +790,18 @@ class DatasetStore:
         # make it (N, y, x, direction)
         return plan.moveaxis(0, -1)
 
+    @staticmethod
+    def color_detector(obs: th.Tensor, color_rgb: th.Tensor, check_presence=False) -> th.Tensor:
+        assert obs.shape[-3] == 3, f"Expected (..., 3, h, w), got {obs.shape}"
+        color_rgb_reshaped = color_rgb.reshape(3, 1, 1)
+        for _ in range(len(obs.shape) - 3):
+            color_rgb_reshaped = color_rgb_reshaped[None]
+        color_map = (obs == color_rgb_reshaped).all(-3)
+        if check_presence:
+            presence = th.any(color_map, dim=(-1, -2))
+            assert presence.all(), f"Color {color_rgb} not found in atleast one of the observation"
+        return color_map
+
 
 @dataclasses.dataclass
 class HelperFeatures:
@@ -622,12 +815,12 @@ class HelperFeatures:
     agent_directions: Optional[np.ndarray] = None  # action along last dim
     actions: Optional[np.ndarray] = None  # action along last dim
 
-    def to_nparray(self, bias=False) -> np.ndarray:
+    def to_nparray(self, bias=False, only_base_features: bool = False) -> np.ndarray:
         base = [np.ones_like(self.agent)] if bias else []
         base = np.stack(
             base + [self.agent, self.floor, self.unsolved_boxes, self.solved_boxes, self.unsolved_targets], axis=-1
         )
-        if self.box_directions is not None:
+        if self.box_directions is not None and not only_base_features:
             base = np.concatenate([base, self.box_directions, self.agent_directions, self.actions], axis=-1)  # type: ignore
         return base
 
@@ -641,16 +834,14 @@ class HelperFeatures:
             assert isinstance(ret, th.Tensor)
             return ret.float().numpy()
         elif feature_name == "agent_directions":
-            return (
-                self.ds.agents_future_direction_map(multioutput=True, future_n_steps=future_n_steps, variable_boxes=True)
-                .float()
-                .numpy()
-            )
+            ret = self.ds.agents_future_direction_map(multioutput=True, future_n_steps=future_n_steps, variable_boxes=True)
+            assert isinstance(ret, th.Tensor)
+            return ret.float().numpy()
         else:
             raise ValueError("Invalid feature_name")
 
     @staticmethod
-    def from_ds(ds: DatasetStore, use_future_features: bool = True) -> "HelperFeatures":
+    def from_ds(ds: DatasetStore, use_future_features: bool = True, multioutput: bool = True) -> "HelperFeatures":
         agent_pos = ds.get_agent_positions(return_map=True)
         floor_pos = ds.get_floor_positions(return_map=True)
         unsolved_box_pos = ds.get_box_positions(return_map=True, only_unsolved=True)
@@ -668,9 +859,16 @@ class HelperFeatures:
         )
 
         if use_future_features:
-            box_directions = ds.boxes_future_direction_map(multioutput=True, variable_boxes=True)
-            assert isinstance(box_directions, th.Tensor)
-            agent_directions = ds.agents_future_direction_map(multioutput=True, variable_boxes=True)
+            box_directions = ds.boxes_future_direction_map(multioutput=multioutput, variable_boxes=True)
+            agent_directions = ds.agents_future_direction_map(multioutput=multioutput, variable_boxes=True)
+            assert isinstance(box_directions, th.Tensor) and isinstance(agent_directions, th.Tensor)
+            if not multioutput:
+                # +1 since -1 stands for no movement
+                box_directions += 1
+                agent_directions += 1
+                eye = th.eye(5, device=box_directions.device, dtype=box_directions.dtype)
+                box_directions = eye[box_directions][..., 1:]
+                agent_directions = eye[agent_directions][..., 1:]
 
             action_pred = ds.get_actions(only_env_steps=True)
             action_pred = th.nn.functional.one_hot(action_pred, num_classes=4)
@@ -682,9 +880,48 @@ class HelperFeatures:
 
         return features
 
+    # @staticmethod
+    # def from_batch_play_output(play_output, use_future_features=True):
+    #     agent = th.all(out.obs == PLAYER[None, None, :, None, None], dim=2)
+    #     agent_on_target = th.all(out.obs == (PLAYER_ON_TARGET)[None, None, :, None, None], dim=2)
+    #     agent = agent | agent_on_target
+
+    #     unsolved_boxes = th.all(out.obs == BOX[None, None, :, None, None], dim=2)
+    #     solved_boxes = th.all(out.obs == BOX_ON_TARGET[None, None, :, None, None], dim=2)
+
+    #     unsolved_targets = th.all(out.obs == TARGET[None, None, :, None, None], dim=2)
+    #     unsolved_targets = unsolved_targets | agent_on_target
+
+    #     features = HelperFeatures(
+    #         ds=None,
+    #         agent=agent.float().numpy(),
+    #         unsolved_boxes=unsolved_boxes.float().numpy(),
+    #         solved_boxes=solved_boxes.float().numpy(),
+    #         unsolved_targets=unsolved_targets.float().numpy(),
+    #     )
+    #     # ds_batch = [DatasetStore.load_from_play_output(play_output, i) for i in range(play_output.obs.shape[1])]
+    #     # features_batch = [HelperFeatures.from_ds(ds, use_future_features) for ds in ds_batch]
+    #     # features = HelperFeatures(
+    #     #     ds=None,
+    #     #     agent=np.stack([f.agent for f in features_batch], axis=1),
+    #     #     unsolved_boxes=np.stack([f.unsolved_boxes for f in features_batch], axis=1),
+    #     #     solved_boxes=np.stack([f.solved_boxes for f in features_batch], axis=1),
+    #     #     unsolved_targets=np.stack([f.unsolved_targets for f in features_batch], axis=1),
+    #     # )
+    #     # if use_future_features:
+    #     #     features.box_directions = np.stack([f.box_directions for f in features_batch], axis=1)  # type: ignore
+    #     #     features.agent_directions = np.stack([f.agent_directions for f in features_batch], axis=1)  # type: ignore
+    #     #     features.actions = np.stack([f.actions for f in features_batch], axis=1)  # type: ignore
+    #     # return features
+
     @staticmethod
-    def from_play_output(play_output, batch_idx: int = 0, use_future_features: bool = True) -> "HelperFeatures":
-        ds = DatasetStore.load_from_play_output(play_output, batch_idx)
+    def from_play_output(
+        play_output,
+        batch_idx: int = 0,
+        use_future_features: bool = True,
+        internal_steps: bool = False,
+    ) -> "HelperFeatures":
+        ds = DatasetStore.load_from_play_output(play_output, batch_idx, internal_steps)
         return HelperFeatures.from_ds(ds, use_future_features)
 
     @staticmethod
@@ -720,9 +957,9 @@ def create_eval_env(
     n_envs=1,
     device=th.device("cpu"),
     BOXOBAN_CACHE: pathlib.Path = pathlib.Path("/training/.sokoban_cache/"),
-    envpool: bool = False,
+    env_id: str = "Boxoban",
 ):
-    if not envpool:
+    if "boxoban" in env_id.lower() and "envpool" not in env_id.lower():
         cfg = BoxobanConfig(
             max_episode_steps=max_episode_steps,
             n_envs=n_envs,
@@ -734,8 +971,9 @@ def create_eval_env(
             difficulty=difficulty,
             seed=42,
         )
-        return cfg, VecTransposeImage(DummyVecEnv([cfg.make] * cfg.n_envs))
-    else:
+        solve_reward = cfg.reward_finished + cfg.reward_box + cfg.reward_step
+        return cfg, VecTransposeImage(DummyVecEnv([cfg.make] * cfg.n_envs)), solve_reward
+    elif "envpool" in env_id.lower() and ("boxoban" in env_id.lower() or "sokoban" in env_id.lower()):
         cfg = EnvpoolSokobanVecEnvConfig(
             max_episode_steps=max_episode_steps,
             n_envs=n_envs,
@@ -747,7 +985,16 @@ def create_eval_env(
             difficulty=difficulty,
             seed=42,
         )
-        return cfg, cfg.make(device=device)
+        solve_reward = cfg.reward_finished + cfg.reward_box + cfg.reward_step
+    elif "minipacman" in env_id.lower():
+        cfg = MiniPacManConfig(env_id=env_id, max_episode_steps=max_episode_steps, n_envs=n_envs)
+        cfg.n_envs = n_envs  # type: ignore
+        solve_reward = 100
+        return cfg, VecTransposeImage(DummyVecEnv([cfg.make] * cfg.n_envs)), solve_reward
+    else:
+        cfg = EnvpoolVecEnvConfig(env_id=env_id, max_episode_steps=max_episode_steps, n_envs=n_envs)
+        solve_reward = 100  # not available
+    return cfg, cfg.make(device=device), solve_reward
 
 
 def think_for_n_steps(
@@ -781,7 +1028,7 @@ def think_for_n_steps(
             lstm_states_for_start_envs,
             reset_all if step_i == 0 else do_not_reset,
             names_filter=names_filter,
-            feature_extractor_kwargs={"return_repeats": True},
+            feature_extractor_kwargs={"return_repeats": False},
         )
         actions = actions.unsqueeze(-1)
         # remove hook_pre_model as it doesn't while thinking for N steps on the same observation
@@ -809,29 +1056,29 @@ def think_for_n_steps(
 def split_cache(cache, num_envs):
     new_cache = [{} for _ in range(num_envs)]
     for k, v in cache.items():
-        if "features_extractor." in k and "hook_pre_model" not in k:
-            assert v.shape[0] == num_envs, f"{v.shape}[0] != {num_envs} for {k}"
-            for i in range(num_envs):
-                new_cache[i][k] = v[i].cpu().numpy()
-        else:
-            assert v.shape[1] == num_envs, f"{v.shape}[1] != {num_envs} for {k}"
-            for i in range(num_envs):
-                new_cache[i][k] = v[:, i, ...].cpu().numpy()
+        if "hook_pre_model" in k:
+            v = v.squeeze(0)  # dim=0 is seq_len which is always 1
+        assert v.shape[0] == num_envs, f"{v.shape}[0] != {num_envs} for {k}"
+        for i in range(num_envs):
+            new_cache[i][k] = v[i].cpu().numpy()
     return new_cache
 
 
 def evaluate_policy_and_collect_dataset(
     model,
     env: Union[gym.Env, VecEnv],
+    output_path: str,
+    cache_keys: Optional[str] = None,
     n_eval_episodes: int = 10,
     deterministic: bool = True,
     reward_threshold: Optional[float] = None,
     return_episode_rewards: bool = False,
-    warn: bool = True,
     n_steps_to_think: int = 0,
     max_episode_steps: int = 80,
     repeats_per_step: int = 1,
     solve_reward: float = SOLVE_REWARD,
+    is_drc: bool = True,
+    env_id: str = "Boxoban-Val-v1",
 ) -> Union[Tuple[float, float, int], Tuple[List[float], List[int], int]]:
     """
     Runs policy for n_eval_episodes. For the ith episode, saves the output of all
@@ -859,6 +1106,9 @@ def evaluate_policy_and_collect_dataset(
     """
     if not isinstance(env, VecEnv):
         env = DummyVecEnv([lambda: env])  # type: ignore[list-item, return-value]
+    assert is_drc or (
+        repeats_per_step == 1 and n_steps_to_think == 0
+    ), f"Non-DRC model should have reps=1 and stt=0, got {repeats_per_step=}, {n_steps_to_think=}"
 
     n_envs = env.num_envs
     episode_rewards: List[float] = []
@@ -866,6 +1116,8 @@ def evaluate_policy_and_collect_dataset(
 
     device = model.device
     observations = env.reset()
+    if isinstance(observations, tuple):
+        observations = observations[0]
     observations = obs_as_tensor(observations, device)
     assert isinstance(observations, th.Tensor)
 
@@ -874,30 +1126,29 @@ def evaluate_policy_and_collect_dataset(
 
     episode_counts = th.zeros(n_envs, dtype=th.int64, device=device)
 
-    states: tuple[th.Tensor, ...] | None = model.recurrent_initial_state(n_envs, device=device)
+    states = None
+    if is_drc:
+        states: tuple[th.Tensor, ...] | None = model.recurrent_initial_state(n_envs, device=device)
     current_rewards = th.zeros(n_envs, dtype=th.float32, device=device)
     episode_starts = th.ones((env.num_envs,), dtype=th.bool, device=device)
 
-    steps_including_repeats = (n_steps_to_think + max_episode_steps) * repeats_per_step
-
     all_obs = th.zeros((n_envs, max_episode_steps, *observations.shape[1:]), dtype=observations.dtype)
     all_rewards = th.zeros((n_envs, max_episode_steps), dtype=th.float32)
-    all_pred_actions = th.zeros((n_envs, steps_including_repeats, 1), dtype=th.int64)
-    all_pred_values = th.zeros((n_envs, steps_including_repeats, 1), dtype=th.float32)
+    all_pred_actions = th.zeros((n_envs, n_steps_to_think + max_episode_steps, 1), dtype=th.int64)
+    all_pred_values = th.zeros((n_envs, n_steps_to_think + max_episode_steps, 1), dtype=th.float32)
     all_model_cache = np.zeros((n_envs, n_steps_to_think + max_episode_steps), dtype=object)
     all_level_infos = -np.ones((n_envs, 2), dtype=int)
-    if "level_file_idx" in env.reset_infos[0]:
+    if hasattr(env, "reset_infos") and "level_file_idx" in env.reset_infos[0]:
         all_level_infos[:] = [(info["level_file_idx"], info["level_idx"]) for info in env.reset_infos]
 
     idx_in_eps = th.zeros((n_envs,), dtype=th.int64)
-    idx_in_eps_with_repeats = th.zeros((n_envs,), dtype=th.int64)
     env_idx = th.arange(n_envs)
     num_finished_episodes = 0
 
     names_filter = None
-    if args.cache_keys:
+    if cache_keys:
         names_filter = []
-        for name in args.cache_keys.split(","):
+        for name in cache_keys.split(","):
             name = name.strip()
             if "cell_list.*" in name:
                 for layer in range(len(model.features_extractor.cell_list)):
@@ -909,7 +1160,8 @@ def evaluate_policy_and_collect_dataset(
         print("Filtering cache keys:", names_filter)
 
     episodes_solved = 0
-    save_dir = pathlib.Path(args.output_path) / f"{n_steps_to_think}_think_step"
+    summed_return = 0
+    save_dir = pathlib.Path(output_path) / f"{n_steps_to_think}_think_step"
     save_dir.mkdir(exist_ok=True, parents=True)
 
     with th.no_grad(), tqdm(total=n_eval_episodes) as pbar, cf.ThreadPoolExecutor(max_workers=32) as executor:
@@ -927,24 +1179,29 @@ def evaluate_policy_and_collect_dataset(
                 )
                 if actions_values_cache is not None:
                     thinking_actions, thinking_values, thinking_cache = actions_values_cache
-                    all_pred_actions[episode_starts, : n_steps_to_think * repeats_per_step] = thinking_actions.cpu()
-                    all_pred_values[episode_starts, : n_steps_to_think * repeats_per_step] = thinking_values.cpu()
+                    all_pred_actions[episode_starts, :n_steps_to_think] = thinking_actions.cpu()
+                    all_pred_values[episode_starts, :n_steps_to_think] = thinking_values.cpu()
                     episode_starts_cpu = episode_starts.cpu()
                     all_model_cache[episode_starts_cpu, :n_steps_to_think] = thinking_cache
-                    idx_in_eps_with_repeats[episode_starts_cpu] += n_steps_to_think * repeats_per_step
                 episode_starts = th.zeros_like(episode_starts)
 
-            (acts, values, log_probs, states), cache = model.run_with_cache(
-                observations,  # type: ignore[arg-type]
-                state=states,
-                episode_starts=episode_starts,
-                deterministic=deterministic,
-                names_filter=names_filter,
-                feature_extractor_kwargs={"return_repeats": True},
-            )
-            states = tree_map(th.clone, states, namespace=type_aliases.SB3_TREE_NAMESPACE, none_is_leaf=False)  # type: ignore
+            if is_drc:
+                (acts, values, log_probs, states), cache = model.run_with_cache(
+                    observations,  # type: ignore[arg-type]
+                    state=states,
+                    episode_starts=episode_starts,
+                    deterministic=deterministic,
+                    names_filter=names_filter,
+                    feature_extractor_kwargs={"return_repeats": False},
+                )
+                states = tree_map(th.clone, states, namespace=type_aliases.SB3_TREE_NAMESPACE, none_is_leaf=False)  # type: ignore
+            else:
+                (acts, values, log_probs), cache = model.run_with_cache(
+                    observations, deterministic=deterministic, names_filter=names_filter
+                )
 
-            new_observations, rewards, dones, infos = env.step(acts[-1, :])  # indexing due to return_repeats=True
+            # -1 index when drc since we use return_repeats=True which returns action predictions for all ticks
+            new_observations, rewards, dones, infos = env.step(acts)
             new_observations = obs_as_tensor(new_observations, device)
             assert isinstance(new_observations, th.Tensor)
             rewards, dones = rewards.to(device), dones.to(device)
@@ -954,16 +1211,14 @@ def evaluate_policy_and_collect_dataset(
             all_obs[env_idx, idx_in_eps] = observations.cpu()
             all_rewards[env_idx, idx_in_eps] = rewards.cpu()
 
-            indices = (idx_in_eps_with_repeats.unsqueeze(-1) + th.arange(repeats_per_step)).view(-1)
-            env_idx_repeated = env_idx.repeat_interleave(repeats_per_step)
-            all_pred_actions[env_idx_repeated, indices] = acts.cpu().transpose(0, 1).reshape(-1, 1)
-            all_pred_values[env_idx_repeated, indices] = values.cpu().transpose(0, 1).reshape(-1, 1)
+            all_pred_actions[env_idx, n_steps_to_think + idx_in_eps] = acts.cpu().unsqueeze(-1)
+            all_pred_values[env_idx, n_steps_to_think + idx_in_eps] = values.cpu()
             all_model_cache[env_idx, n_steps_to_think + idx_in_eps] = split_cache(cache, n_envs)
 
             idx_in_eps += 1
-            idx_in_eps_with_repeats += repeats_per_step
-            episode_starts = dones
-            for i in th.where(dones)[0]:
+            done_or_trunc = th.logical_or(dones, idx_in_eps.to(device) >= max_episode_steps)
+            episode_starts = done_or_trunc
+            for i in th.where(done_or_trunc)[0]:
                 reward = rewards[i].item()
                 info = infos[i]
                 episode_solved = np.isclose(reward, solve_reward, atol=1e-4).item()
@@ -975,42 +1230,46 @@ def evaluate_policy_and_collect_dataset(
                     obs=all_obs[i][: idx_in_eps[i]],
                     rewards=all_rewards[i][: idx_in_eps[i]],
                     solved=episode_solved,
-                    pred_actions=all_pred_actions[i][: idx_in_eps_with_repeats[i]],
-                    pred_values=all_pred_values[i][: idx_in_eps_with_repeats[i]],
+                    pred_actions=all_pred_actions[i][: idx_in_eps[i]],
+                    pred_values=all_pred_values[i][: idx_in_eps[i]],
                     model_cache=join_cache_across_steps(all_model_cache[i][: n_steps_to_think + idx_in_eps[i]]),
                     file_idx=all_level_infos[i][0],
                     level_idx=all_level_infos[i][1],
+                    env_id=env_id,
                 )
                 executor.submit(ds.save)
 
-                if "level_idx" in env.reset_infos[i]:
+                if hasattr(env, "reset_infos") and "level_file_idx" in env.reset_infos[i]:
                     all_level_infos[i] = (info["level_file_idx"], info["level_idx"])
                 episode_counts[i] += 1
                 num_finished_episodes += 1
                 episodes_solved += episode_solved
+                summed_return += current_rewards[i].item()
                 current_rewards[i] = 0
                 idx_in_eps[i] = 0
-                idx_in_eps_with_repeats[i] = 0
 
             observations = new_observations
             pbar.update(num_finished_episodes - pbar.n)
-            solve_perc = 100 * episodes_solved / num_finished_episodes if num_finished_episodes > 0 else 0
-            pbar.set_postfix_str(f"solved={solve_perc:.1f}")
+            solve_perc = 100 * episodes_solved / max(1, num_finished_episodes)
+            avg_return = summed_return / max(1, num_finished_episodes)
+            pbar.set_postfix_str(f"solved={solve_perc:.1f}%, avg_return={avg_return:.2f}")
 
     mean_reward = np.mean(episode_rewards).item()
     std_reward = np.std(episode_rewards).item()
     if reward_threshold is not None:
-        assert mean_reward > reward_threshold, "Mean reward below threshold: " f"{mean_reward:.2f} < {reward_threshold:.2f}"
+        assert mean_reward > reward_threshold, f"Mean reward below threshold: {mean_reward:.2f} < {reward_threshold:.2f}"
     if return_episode_rewards:
         return episode_rewards, episode_lengths, episodes_solved
     return mean_reward, std_reward, episodes_solved
 
 
-def collect_dataset(model_path, args):
-    if TEST:
+def collect_dataset(args):
+    model_path = download_policy_from_huggingface(args.model_path)
+
+    if args.test:
         max_episode_steps = 10
         n_eval_episodes = 1
-        n_steps_to_think = [2]
+        n_steps_to_think = [0]
         n_envs = 2
         device = th.device("cpu")
     else:
@@ -1023,28 +1282,30 @@ def collect_dataset(model_path, args):
 
     split = None if args.split == "none" or not args.split else args.split
     for i, steps_to_think in enumerate(n_steps_to_think):
-        env_cfg, eval_env = create_eval_env(
+        env_cfg, eval_env, solve_reward = create_eval_env(
             split=split,
             difficulty=args.difficulty,
             max_episode_steps=max_episode_steps,
             n_envs=n_envs,
             device=device,
             BOXOBAN_CACHE=pathlib.Path(args.boxoban_cache),
-            envpool=args.envpool,
+            env_id=args.env_id,
         )
         cfg, policy = load_jax_model_to_torch(model_path, env_cfg)
-        assert isinstance(cfg.features_extractor, ConvLSTMOptions)
         policy = policy.to(device)
-        solve_reward = env_cfg.reward_finished + env_cfg.reward_box + env_cfg.reward_step
         mean, std, solved = evaluate_policy_and_collect_dataset(
             policy,
             eval_env,
+            output_path=args.output_path,
+            cache_keys=args.cache_keys,
             n_eval_episodes=n_eval_episodes,
             deterministic=True,
             n_steps_to_think=steps_to_think,
-            repeats_per_step=cfg.features_extractor.repeats_per_step,
+            repeats_per_step=cfg.features_extractor.repeats_per_step if cfg.is_drc else 1,  # type: ignore
             solve_reward=solve_reward,
             max_episode_steps=max_episode_steps,
+            is_drc=cfg.is_drc,
+            env_id=env_cfg.env_id,
         )
         print(f"Steps to think: {steps_to_think}, mean return: {mean}, std return: {std}")
         print("Fraction of solved episodes: ", solved / n_eval_episodes)
@@ -1060,12 +1321,14 @@ if __name__ == "__main__":
         help="local path or relative huggingface path",
     )
     parser.add_argument("-t", "--test", action="store_true", help="Enable test mode")
-    parser.add_argument("-e", "--envpool", action="store_true", help="Use EnvpoolSokobanVecEnv")
+    parser.add_argument(
+        "-e", "--env_id", type=str, default="Boxoban-Val-v1", help="Env id. For envpool sokoban, use EnvpoolSokoban-v1"
+    )
     parser.add_argument("-c", "--boxoban_cache", type=str, default="/training/.sokoban_cache/")
     parser.add_argument("-d", "--device", type=str, default="cuda" if th.cuda.is_available() else "cpu")
     parser.add_argument("-s", "--split", type=str, default="valid")
     parser.add_argument("-l", "--difficulty", type=str, default="medium")
-    parser.add_argument("-n", "--n_eval_episodes", type=int, default=1000)
+    parser.add_argument("-n", "--n_eval_episodes", type=int, default=500)
     parser.add_argument("-b", "--batch_size", type=int, default=100, help="Number of envs (& episodes) to process in parallel")
     parser.add_argument("-o", "--output_path", type=str, default=".")
     parser.add_argument(
@@ -1078,7 +1341,4 @@ if __name__ == "__main__":
     parser.add_argument("--n_steps_to_think", type=str, default="0", help="Comma separated list of steps to think")
     args = parser.parse_args()
 
-    TEST = args.test
-    model_path = download_policy_from_huggingface(args.model_path)
-
-    collect_dataset(model_path, args)
+    collect_dataset(args)

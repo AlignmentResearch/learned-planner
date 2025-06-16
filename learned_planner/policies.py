@@ -5,20 +5,9 @@ import abc
 import copy
 import dataclasses
 import logging
+from collections import OrderedDict
 from pathlib import Path
-from typing import (
-    Any,
-    Callable,
-    ClassVar,
-    Dict,
-    List,
-    Optional,
-    Sequence,
-    Tuple,
-    Type,
-    Union,
-    cast,
-)
+from typing import Any, Callable, ClassVar, Dict, List, Optional, Sequence, Tuple, Type, Union, cast
 
 import gymnasium as gym
 import huggingface_hub
@@ -32,21 +21,16 @@ from stable_baselines3.common.recurrent.policies import (
     BaseRecurrentActorCriticPolicy,
     RecurrentFeaturesExtractorActorCriticPolicy,
 )
-from stable_baselines3.common.recurrent.torch_layers import (
-    RecurrentFeaturesExtractor,
-    RecurrentState,
-)
-from stable_baselines3.common.torch_layers import (
-    BaseFeaturesExtractor,
-    FlattenExtractor,
-)
+from stable_baselines3.common.recurrent.torch_layers import RecurrentFeaturesExtractor, RecurrentState
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor, FlattenExtractor
 from stable_baselines3.common.type_aliases import Schedule, check_cast, non_null
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.ppo import MlpPolicy
 from torchvision.models.resnet import BasicBlock
+from transformer_lens.hook_points import HookPoint
 
 from learned_planner.activation_fns import ActivationFnConfig, ReLUConfig
-from learned_planner.convlstm import BaseFeaturesExtractorConfig, ConvLSTMOptions
+from learned_planner.convlstm import BaseFeaturesExtractorConfig, ConvLSTMOptions, NCHWtoNHWC
 
 log = logging.getLogger(__name__)
 
@@ -65,7 +49,7 @@ class FlattenFeaturesExtractorConfig(BaseFeaturesExtractorConfig):
 
 @dataclasses.dataclass
 class BasePolicyConfig(abc.ABC):
-    policy: ClassVar[type[BasePolicy] | str]
+    policy: type[BasePolicy] | str
     features_extractor: BaseFeaturesExtractorConfig = dataclasses.field(default_factory=FlattenFeaturesExtractorConfig)
     net_arch: Optional[NetArchConfig] = None
 
@@ -78,8 +62,9 @@ class BasePolicyConfig(abc.ABC):
 
 @dataclasses.dataclass
 class MlpPolicyConfig(BasePolicyConfig):
-    policy = "MlpPolicy"
+    policy: type[BasePolicy] | str = "MlpPolicy"
     features_extractor: BaseFeaturesExtractorConfig = dataclasses.field(default_factory=FlattenFeaturesExtractorConfig)
+    is_drc: bool = False
 
 
 @dataclasses.dataclass
@@ -117,6 +102,118 @@ class ResNetExtractor(FlattenExtractor):
         super().__init__(gym.spaces.Box(low, high, (n_features,)))
         self.cfg = cfg
         self.flatten = extractor
+
+
+class GuezResidualBlock(nn.Module):
+    """
+    A resnet block with a relu, conv, and residual connection.
+    """
+
+    def __init__(self, in_channels: int, out_channels: int, kernel_size: int):
+        """
+        Args:
+            in_channels: Number of input channels.
+            out_channels: Number of output channels.
+            kernel_size: Size of the kernel for the convolutional layer.
+        """
+        super().__init__()
+        self.relu = nn.ReLU()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding="same")
+
+        self.hook_relu = HookPoint()
+        self.hook_conv = HookPoint()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+        out = self.relu(x)
+        out = self.hook_relu(out)
+        out = self.conv(out)
+        out = self.hook_conv(out)
+        return out + residual
+
+
+class GuezConvSequence(nn.Module):
+    """
+    A sequence of conv,resnet,resnet layers used in Guez et. al. (2019)'s ResNet architecture.
+    """
+
+    def __init__(self, out_channels: int, inp_channels: int, kernel_size: int = 3, stride: int = 1, is_input: bool = False):
+        """
+        Args:
+            out_channels: Number of output channels for the conv layer.
+            kernel_size: Size of the kernel for the conv layer.
+            stride: Stride for the conv layer.
+            is_input: Whether this is the first layer in the sequence (for input normalization).
+        """
+        super().__init__()
+        self.conv = nn.Conv2d(
+            in_channels=inp_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding="same",
+        )
+        self.resnet0 = GuezResidualBlock(out_channels, out_channels, kernel_size)
+        self.resnet1 = GuezResidualBlock(out_channels, out_channels, kernel_size)
+
+        self.hook_lead_conv = HookPoint()
+        self.hook_resnet0 = HookPoint()
+        self.hook_resnet1 = HookPoint()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through the conv and resnet layers.
+
+        Args:
+            x: Input tensor of shape (batch_size, channels, height, width).
+
+        Returns:
+            torch.Tensor: Output tensor after passing through the conv and resnet layers.
+        """
+        x = self.conv(x)
+        x = self.hook_lead_conv(x)
+        x = self.resnet0(x)
+        x = self.hook_resnet0(x)
+        x = self.resnet1(x)
+        x = self.hook_resnet1(x)
+        return x
+
+
+@dataclasses.dataclass
+class GuezResNetExtractorConfig(BaseFeaturesExtractorConfig):
+    channels: tuple[int, ...] = (32, 32, 64, 64, 64, 64, 64, 64, 64)
+    strides: tuple[int, ...] = (1,) * 9
+    kernel_sizes: tuple[int, ...] = (4,) * 9
+
+    @property
+    def num_layers(self) -> int:
+        return len(self.channels)
+
+    def kwargs(self, vec_env: VecEnv) -> dict[str, Any]:
+        return dict(features_extractor_class=ResNetExtractor, features_extractor_kwargs=dict(cfg=self))
+
+    def make(self, channels: int):
+        assert (
+            len(self.channels) == len(self.strides) == len(self.kernel_sizes)
+        ), f"{len(self.channels)=}, {len(self.strides)=}, {len(self.kernel_sizes)=} must be equal."
+        num_layers = len(self.channels)
+        return nn.Sequential(
+            OrderedDict(
+                [
+                    (
+                        f"guez_conv_sequence_{i}",
+                        GuezConvSequence(
+                            self.channels[i],
+                            self.channels[i - 1] if i > 0 else channels,
+                            kernel_size=self.kernel_sizes[i],
+                            stride=self.strides[i],
+                        ),
+                    )
+                    for i in range(num_layers)
+                ]
+                + [("relu", nn.ReLU()), ("to_nhwc", NCHWtoNHWC())]
+            )
+        )
 
 
 @dataclasses.dataclass
@@ -511,7 +608,7 @@ class BatchedRewardPolicy(ActorCriticPolicy):
 
 @dataclasses.dataclass
 class BatchedRewardPolicyConfig(BasePolicyConfig):
-    policy = BatchedRewardPolicy
+    policy: type[BasePolicy] | str = BatchedRewardPolicy
     features_extractor: BaseFeaturesExtractorConfig = dataclasses.field(default_factory=RewardNNFeaturesExtractorConfig)
 
     def policy_and_kwargs(self, vec_env: VecEnv) -> tuple[type[BasePolicy] | str, dict[str, Any]]:
@@ -671,6 +768,7 @@ class ObsMlpPolicyConfig(BasePolicyConfig):
 class ConvLSTMPolicyConfig(BaseRecurrentPolicyConfig):
     policy = RecurrentFeaturesExtractorActorCriticPolicy
     features_extractor: BaseFeaturesExtractorConfig = dataclasses.field(default_factory=ConvLSTMOptions)
+    is_drc: bool = True
 
 
 @dataclasses.dataclass
@@ -705,5 +803,5 @@ def download_policy_from_huggingface(local_or_hgf_repo_path: str | Path, force_d
             if not force_download:
                 return download_policy_from_huggingface(local_or_hgf_repo_path, force_download=True)
             raise ValueError(f"Model {local_or_hgf_repo_path} not found in local cache or on the hub")
-        
+
     return local_or_hgf_repo_path

@@ -5,6 +5,7 @@ import re
 from functools import partial
 from glob import glob
 from pathlib import Path
+from time import time
 from typing import Literal, Optional, Sequence
 
 import numpy as np
@@ -77,6 +78,8 @@ class ActivationsDataset(Dataset):
         load_data: bool = True,
         seed: int = 42,
         train: bool = True,
+        region_3x3: bool = False,
+        horizon: int = -1,
     ):
         """Create a dataset of model activations to train probes on.
 
@@ -130,6 +133,8 @@ class ActivationsDataset(Dataset):
         self.skip_walls = skip_walls
         self.multioutput = multioutput
         self.only_env_steps = only_env_steps
+        self.region_3x3 = region_3x3
+        self.horizon = horizon
 
         if load_data:
             self.load_data(num_data_points)
@@ -160,46 +165,50 @@ class ActivationsDataset(Dataset):
 
         self.classification = True
         self.grid_wise = is_grid_wise_dataset(self.labels_type)
-        if self.labels_type == "pred_value":
-            gt_output = ds_cache.get_values(
-                only_env_steps=self.only_env_steps, include_initial_thinking=include_initial_thinking
-            )
-            self.classification = False
-        elif self.labels_type == "true_value":
-            gt_output = ds_cache.get_true_values(gamma=self.gamma_value)
-            self.classification = False
-        elif self.labels_type == "reward":
-            gt_output = ds_cache.rewards
-            self.classification = False
-        elif self.labels_type == "success":
-            gt_output = ds_cache.get_success_repeated()
-        elif self.labels_type == "agents_future_position_map":
-            gt_output = ds_cache.agents_future_position_map()
-        elif self.labels_type == "agents_future_direction_map":
-            gt_output = ds_cache.agents_future_direction_map(multioutput=self.multioutput)
-        elif self.labels_type == "boxes_future_position_map":
-            gt_output = ds_cache.boxes_future_position_map()
-        elif self.labels_type == "boxes_future_direction_map":
-            gt_output = ds_cache.boxes_future_direction_map(multioutput=self.multioutput)
-        elif self.labels_type == "next_box":
-            gt_output = ds_cache.next_box()
-            all_cache_values = [v[: len(gt_output)] for v in all_cache_values]
-        elif self.labels_type == "next_target":
-            gt_output = ds_cache.next_target()
-            all_cache_values = [v[: len(gt_output)] for v in all_cache_values]
-        elif self.labels_type.startswith("actions_for_probe"):
-            args = self.labels_type[len("actions_for_probe") + 1 :].split("_")
-            action = int(args[0])
-            if len(args) > 1:
-                self.grid_wise = args[1] == "True"
-            gt_output = ds_cache.actions_for_probe(action, grid_wise=self.grid_wise)
-        elif self.labels_type == "agent_in_a_cycle":
-            gt_output = ds_cache.agent_in_a_cycle()
-        elif self.labels_type == "alternative_boxes_direction_map":
-            gt_output = ds_cache.alternative_boxes_future_direction_map()
-            self.multioutput = True
-        else:
-            raise ValueError(f"Unknown labels type {self.labels_type}")
+        try:
+            if self.labels_type == "pred_value":
+                gt_output = ds_cache.get_values(
+                    only_env_steps=self.only_env_steps, include_initial_thinking=include_initial_thinking
+                )
+                self.classification = False
+            elif self.labels_type == "true_value":
+                gt_output = ds_cache.get_true_values(gamma=self.gamma_value)
+                self.classification = False
+            elif self.labels_type == "reward":
+                gt_output = ds_cache.rewards
+                self.classification = False
+            elif self.labels_type == "success":
+                gt_output = ds_cache.get_success_repeated()
+            elif self.labels_type == "agents_future_position_map":
+                gt_output = ds_cache.agents_future_position_map(horizon=self.horizon)
+            elif self.labels_type == "agents_future_direction_map":
+                gt_output = ds_cache.agents_future_direction_map(multioutput=self.multioutput)
+            elif self.labels_type == "boxes_future_position_map":
+                gt_output = ds_cache.boxes_future_position_map()
+            elif self.labels_type == "boxes_future_direction_map":
+                gt_output = ds_cache.boxes_future_direction_map(multioutput=self.multioutput)
+            elif self.labels_type == "next_box":
+                gt_output = ds_cache.next_box()
+                all_cache_values = [v[: len(gt_output)] for v in all_cache_values]
+            elif self.labels_type == "next_target":
+                gt_output = ds_cache.next_target()
+                all_cache_values = [v[: len(gt_output)] for v in all_cache_values]
+            elif self.labels_type.startswith("actions_for_probe"):
+                args = self.labels_type[len("actions_for_probe") + 1 :].split("_")
+                action = int(args[0])
+                if len(args) > 1:
+                    self.grid_wise = args[1] == "True"
+                gt_output = ds_cache.actions_for_probe(action, grid_wise=self.grid_wise)
+            elif self.labels_type == "agent_in_a_cycle":
+                gt_output = ds_cache.agent_in_a_cycle()
+            elif self.labels_type == "alternative_boxes_direction_map":
+                gt_output = ds_cache.alternative_boxes_future_direction_map()
+                self.multioutput = True
+            else:
+                raise ValueError(f"Unknown labels type {self.labels_type}")
+        except AssertionError:
+            print(f"Skipping {file_name} due to assertion error")
+            return [], [], np.array([])
 
         if self.grid_wise and self.balance_classes:
             raise ValueError("Cannot balance classes for grid-wise data")
@@ -225,7 +234,10 @@ class ActivationsDataset(Dataset):
                         continue
                     cache_data = {}
                     for comp_idx in range(len(all_cache_values)):
-                        v = all_cache_values[comp_idx][v_idx][:, i, j]
+                        if self.region_3x3:
+                            v = all_cache_values[comp_idx][v_idx][:, i - 1 : i + 2, j - 1 : j + 2]
+                        else:
+                            v = all_cache_values[comp_idx][v_idx][:, i, j]
                         cache_data[self.keys[comp_idx]] = v
                     data.append(cache_data)
                     gt_output_data.append(
@@ -269,8 +281,10 @@ class ActivationsDataset(Dataset):
 
         results = []
         map_fn = partial(self.load_file, num_data_points=num_data_points_per_file)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+        # with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=16) as executor:
             results = list(tqdm(executor.map(map_fn, self.level_files), total=len(self.level_files)))
+        # results = list(tqdm(map(map_fn, self.level_files), total=len(self.level_files)))
         self.data = [item for result in results for item in result[0]]
         self.gt_output = [item for result in results for item in result[1]]
         self.boxing_indices = [item for result in results for item in result[2]]
@@ -375,6 +389,7 @@ class TrainOn:
     channel: int = -1  # -1 means all channels
     dataset_name: str = "boxes_future_direction_map"
     hooks: list[str] = dataclasses.field(default_factory=lambda: ["hook_h", "hook_c"])
+    region_3x3: bool = False
 
     def __post_init__(self):
         if isinstance(self.layer, int):
@@ -456,8 +471,8 @@ def train_setup(args: TrainProbeConfig, eval_cfg: EnvConfig):
         train_ds, test_ds = random_split(acts_ds, [0.8, 0.2])
     else:
         try:
-            train_ds = th.load(str(dataset_path).replace(".pt", "_train.pt"))
-            test_ds = th.load(str(dataset_path).replace(".pt", "_test.pt"))
+            train_ds = th.load(str(dataset_path))
+            test_ds = th.load(str(dataset_path).replace("_train.pt", "_test.pt"))
             acts_ds = train_ds
             print("Loaded separate train and test datasets")
         except FileNotFoundError:
@@ -466,7 +481,11 @@ def train_setup(args: TrainProbeConfig, eval_cfg: EnvConfig):
             print("Loaded single dataset and split into train and test")
         if "multioutput" not in acts_ds.__dict__:
             acts_ds.multioutput = False
-    classification = acts_ds.classification
+    try:
+        classification = acts_ds.classification
+    except AttributeError:
+        classification = True
+        print("Warning: classification not set in dataset, defaulting to True")
     input_dim, output_dim = acts_ds.num_features, 1
 
     return policy, policy_cfg, acts_ds, classification, input_dim, output_dim, train_ds, test_ds
@@ -507,7 +526,10 @@ def fit_probe(
         with open(args.probe_path, "rb") as f:
             probe = pickle.load(f)
     else:
+        t0 = time()
+        print("Shapes:", train_X.shape, train_y.shape)
         probe.fit(train_X, train_y)
+        print(f"probe.fit took {time() - t0:.2f} seconds")
 
     test_preds = probe.predict(test_X)
     train_preds = probe.predict(train_X)
@@ -548,7 +570,7 @@ def fit_probe(
     metrics[f"{probe_subkey}/nonzero_weights_ratio"] = nonzero_weights_ratio
     with open(run_dir / f"probe_{probe_subkey}.pkl", "wb") as f:
         pickle.dump(probe, f)
-    print(f"Saved probe weights to probe_{probe_subkey}.pkl")
+    print(f"Saved probe weights to {run_dir}/probe_{probe_subkey}.pkl")
     wandb.log(metrics)  # type: ignore
     print(metrics)
     return probe, metrics
@@ -557,21 +579,35 @@ def fit_probe(
 def train_with_sklearn(args: TrainProbeConfig, eval_cfg: EnvConfig, eval_env, run_dir: Path):
     policy, policy_cfg, acts_ds, classification, _, _, train_ds, test_ds = train_setup(args, eval_cfg)
     if classification:
-        pos_ratio = 100 * (acts_ds.get_labels() == 1).sum() / len(acts_ds)  # type: ignore
-        print(f"Positive ratio: {pos_ratio:.2f}%")
+        if acts_ds.multioutput or acts_ds.labels_type in [
+            "agents_future_position_map",
+            "boxes_future_position_map",
+            "agent_in_a_cycle",
+        ]:
+            pos_ratio = 100 * (acts_ds.get_labels() == 1).sum() / len(acts_ds)  # type: ignore
+            print(f"Positive ratio: {pos_ratio:.2f}%")
+        else:
+            pos_ratio = 100 * (acts_ds.get_labels() != -1).sum() / len(acts_ds)  # type: ignore
+            print(f"Positive ratio: {pos_ratio:.2f}%")
+
     layer = args.train_on.layer
     channel = args.train_on.channel
     channel = slice(None) if channel == -1 else channel
 
     train_X, train_y = list(zip(*train_ds))
     train_y = np.stack(train_y)
+
+    def layer_check(layer, key):
+        assert layer >= 0, f"Layer must be 0 or greater, got {layer}"
+        return f"cell_list.{layer}" in key or f"guez_conv_sequence_{layer}" in key
+
     if layer == -1:
         layer_keys = [k for k in acts_ds.keys if any(k.endswith(h) for h in args.train_on.hooks)]
     elif isinstance(layer, list) or isinstance(layer, tuple):
         layer_keys = [k for k in acts_ds.keys if any(k.endswith(h) for h in args.train_on.hooks)]
-        layer_keys = [k for k in layer_keys if any(f"cell_list.{ly}" in k for ly in layer)]
+        layer_keys = [k for k in layer_keys if any(layer_check(ly, k) for ly in layer)]
     else:
-        layer_keys = [k for k in acts_ds.keys if f"cell_list.{layer}" in k and any(k.endswith(h) for h in args.train_on.hooks)]
+        layer_keys = [k for k in acts_ds.keys if layer_check(layer, k) and any(k.endswith(h) for h in args.train_on.hooks)]
     print(f"Layer keys: {layer_keys}")
     train_X = np.stack(
         [
@@ -745,7 +781,7 @@ def evaluate(
                 )
                 if eval_type == "probe":
                     input_features = th.cat(
-                        [cache[k + f".0.{repeats_per_step-1}"].reshape(num_valid_actions, -1) for k in cache_keys], dim=1
+                        [cache[k + f".0.{repeats_per_step - 1}"].reshape(num_valid_actions, -1) for k in cache_keys], dim=1
                     )
                     assert input_features.shape[0] == next_obs.shape[0]
                     action_idx_in_next_acts = probe_model.predict(input_features).argmax().item()

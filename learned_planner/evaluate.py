@@ -1,9 +1,7 @@
 import dataclasses
 from pathlib import Path
 
-from learned_planner.common import (
-    catch_different_env_types_warning,
-)
+from learned_planner.common import catch_different_env_types_warning
 from learned_planner.train import BaseCommandConfig, create_vec_env_and_eval_callbacks, make_model
 
 

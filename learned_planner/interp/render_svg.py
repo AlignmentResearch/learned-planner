@@ -18,7 +18,7 @@ BOX_ON_TARGET = np.array([254, 95, 56])
 BOX = np.array([142, 121, 56])
 PLAYER = np.array([160, 212, 56])
 PLAYER_ON_TARGET = np.array([219, 212, 56])
-FLOOR = [243, 248, 238]
+FLOOR = np.array([243, 248, 238])
 
 
 def render_level_svg(
@@ -64,7 +64,7 @@ def level_to_svg(level: str, *, level_sz: int = 10) -> str:
 
 
 def tiny_world_rgb_to_svg(rgb, return_info=False):
-    assert len(rgb.shape) == 3 and rgb.shape[2] == 3 and rgb.shape[0] == rgb.shape[1]
+    assert len(rgb.shape) == 3 and rgb.shape[2] == 3  # and rgb.shape[0] == rgb.shape[1]
     if isinstance(rgb, th.Tensor):
         rgb = rgb.cpu().numpy()
     # H,W transpose needed for argwhere
@@ -80,6 +80,28 @@ def tiny_world_rgb_to_svg(rgb, return_info=False):
     if return_info:
         return svg, (wall_pos, box_pos, target_pos, player_pos)
     return svg
+
+
+def tiny_world_rgb_to_txt(rgb):
+    txt = ""
+    for y in range(rgb.shape[0]):
+        for x in range(rgb.shape[1]):
+            if np.all(rgb[y, x] == WALL):
+                txt += "#"
+            elif np.all(rgb[y, x] == TARGET):
+                txt += "."
+            elif np.all(rgb[y, x] == BOX):
+                txt += "$"
+            elif np.all(rgb[y, x] == PLAYER):
+                txt += "@"
+            elif np.all(rgb[y, x] == BOX_ON_TARGET):
+                txt += "*"
+            elif np.all(rgb[y, x] == PLAYER_ON_TARGET):
+                txt += "+"
+            else:
+                txt += " "
+        txt += "\n"
+    return txt
 
 
 def episode_obs_to_svgs(episode_obs, max_len):

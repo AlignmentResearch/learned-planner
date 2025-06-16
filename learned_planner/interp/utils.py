@@ -3,6 +3,7 @@ import pickle
 import re
 import subprocess
 import warnings
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Tuple, Union
 
@@ -11,6 +12,7 @@ import torch as th
 from cleanba import cleanba_impala
 from cleanba import convlstm as cleanba_convlstm
 from cleanba.environments import BoxobanConfig, EnvpoolBoxobanConfig, convert_to_cleanba_config
+from cleanba.network import GuezResNetConfig as CleanbaGuezResNetConfig
 from gymnasium.spaces import MultiDiscrete
 from sklearn.multioutput import MultiOutputClassifier
 
@@ -18,7 +20,14 @@ from learned_planner import BOXOBAN_CACHE, ON_CLUSTER
 from learned_planner.activation_fns import IdentityActConfig, ReLUConfig
 from learned_planner.convlstm import CompileConfig, ConvConfig, ConvLSTMCellConfig, ConvLSTMOptions
 from learned_planner.interp.render_svg import BOX, BOX_ON_TARGET, FLOOR, PLAYER, TARGET
-from learned_planner.policies import ConvLSTMPolicyConfig, NetArchConfig, download_policy_from_huggingface
+from learned_planner.policies import (
+    ConvLSTMPolicyConfig,
+    GuezResNetExtractorConfig,
+    MlpPolicy,
+    MlpPolicyConfig,
+    NetArchConfig,
+    download_policy_from_huggingface,
+)
 
 
 @dataclass
@@ -30,8 +39,8 @@ class PlayLevelOutput:
     rewards: th.Tensor
     lengths: th.Tensor
     solved: th.Tensor
-    cache: dict[str, th.Tensor]
-    info: dict[str, Any]
+    cache: Optional[dict[str, th.Tensor]] = None
+    info: Optional[dict[str, Any]] = None
     probe_outs: Optional[list[np.ndarray]] = None
     sae_outs: Optional[th.Tensor] = None
 
@@ -55,25 +64,38 @@ def conv_args_process(conv_args):
 
 
 def jax_to_torch_cfg(jax_cfg):
-    assert isinstance(jax_cfg, cleanba_convlstm.ConvLSTMConfig)
     mlp_hiddens = jax_cfg.mlp_hiddens
-    recurrent_conv = ConvConfig(**conv_args_process(jax_cfg.recurrent.conv))
-    recurrent_less_conv = dict(jax_cfg.recurrent.__dict__)
-    del recurrent_less_conv["conv"]
-    recurrent = ConvLSTMCellConfig(recurrent_conv, **recurrent_less_conv)
-    return ConvLSTMPolicyConfig(
-        features_extractor=ConvLSTMOptions(
-            compile=CompileConfig(),
-            embed=[ConvConfig(**conv_args_process(jax_embed)) for jax_embed in jax_cfg.embed],
-            recurrent=recurrent,
-            n_recurrent=jax_cfg.n_recurrent,
-            repeats_per_step=jax_cfg.repeats_per_step,
-            pre_model_nonlin=ReLUConfig() if jax_cfg.use_relu else IdentityActConfig(),
-            skip_final=jax_cfg.skip_final,
-            residual=jax_cfg.residual,
-        ),
-        net_arch=NetArchConfig(mlp_hiddens, mlp_hiddens),
-    )
+    if isinstance(jax_cfg, cleanba_convlstm.ConvLSTMConfig):
+        recurrent_conv = ConvConfig(**conv_args_process(jax_cfg.recurrent.conv))
+        recurrent_less_conv = dict(jax_cfg.recurrent.__dict__)
+        del recurrent_less_conv["conv"]
+        recurrent = ConvLSTMCellConfig(recurrent_conv, **recurrent_less_conv)
+        return ConvLSTMPolicyConfig(
+            features_extractor=ConvLSTMOptions(
+                compile=CompileConfig(),
+                embed=[ConvConfig(**conv_args_process(jax_embed)) for jax_embed in jax_cfg.embed],
+                recurrent=recurrent,
+                n_recurrent=jax_cfg.n_recurrent,
+                repeats_per_step=jax_cfg.repeats_per_step,
+                pre_model_nonlin=ReLUConfig() if jax_cfg.use_relu else IdentityActConfig(),
+                skip_final=jax_cfg.skip_final,
+                residual=jax_cfg.residual,
+            ),
+            net_arch=NetArchConfig(mlp_hiddens, mlp_hiddens),
+        )
+    elif isinstance(jax_cfg, CleanbaGuezResNetConfig):
+        return MlpPolicyConfig(
+            policy=MlpPolicy,
+            features_extractor=GuezResNetExtractorConfig(
+                compile=CompileConfig(),
+                channels=jax_cfg.channels,
+                strides=jax_cfg.strides,
+                kernel_sizes=jax_cfg.kernel_sizes,
+            ),
+            net_arch=NetArchConfig(mlp_hiddens, mlp_hiddens),
+        )
+    else:
+        raise ValueError(f"Unsupported JAX config type: {type(jax_cfg)}.")
 
 
 def jax_get(param_name, params):
@@ -84,15 +106,13 @@ def jax_get(param_name, params):
     return ret_params
 
 
-def copy_params_from_jax(torch_policy, jax_params, jax_args):
-    h, w = 10, 10
+def copy_drc_params_from_jax(torch_policy, jax_params, jax_args):
     network_params = jax_params["network_params"]
 
     num_recurrent_layers = jax_args.net.n_recurrent
     num_embed_layers = len(jax_args.net.embed)
     is_pool_and_inject = jax_args.net.recurrent.pool_and_inject != "no"
     num_mlps = len(jax_args.net.mlp_hiddens)
-    hidden_channels = jax_args.net.recurrent.conv.features
 
     # copy embed params
     for i in range(num_embed_layers):
@@ -124,11 +144,7 @@ def copy_params_from_jax(torch_policy, jax_params, jax_args):
     # copy actor, critic params
     for i in range(num_mlps):
         mlp_weights = jax_get(f"dense_list_{i}.kernel", network_params).transpose()
-        if i == 0:
-            mlp_weights = th.tensor(np.asarray(mlp_weights.reshape(mlp_weights.shape[0], h, w, hidden_channels)))
-            mlp_weights = mlp_weights.permute(0, 3, 1, 2).reshape(mlp_weights.shape[0], -1)
-        else:
-            mlp_weights = th.tensor(np.asarray(mlp_weights))
+        mlp_weights = th.tensor(np.asarray(mlp_weights))
         mlp_bias = np.asarray(jax_get(f"dense_list_{i}.bias", network_params))
         getattr(torch_policy.mlp_extractor.policy_net, f"fc{i}").weight.data.copy_(mlp_weights)
         getattr(torch_policy.mlp_extractor.policy_net, f"fc{i}").bias.data.copy_(th.tensor(mlp_bias))
@@ -155,11 +171,59 @@ def copy_params_from_jax(torch_policy, jax_params, jax_args):
             loading_comp.bias.data[-1].fill_(-1000)  # large negative value to make the NOOP action not selected
 
 
+def copy_wb(torch_layer, jax_params):
+    kernel = jax_get("kernel", jax_params)
+    if len(kernel.shape) == 4:  # conv2d
+        kernel = kernel.transpose(3, 2, 0, 1)
+    elif len(kernel.shape) == 2:  # linear layer
+        kernel = kernel.transpose()
+    else:
+        raise ValueError(f"Unexpected kernel shape: {kernel.shape}. Expected 4D for conv2d or 2D for linear layer.")
+
+    kernel = np.asarray(kernel)
+    bias = np.asarray(jax_get("bias", jax_params)) if "bias" in jax_params else None
+    torch_layer.weight.data.copy_(th.tensor(kernel))
+    if bias is not None:
+        torch_layer.bias.data.copy_(th.tensor(bias))
+
+
+def copy_resnet_params_from_jax(torch_policy, jax_params, jax_args):
+    network_params = jax_params["network_params"]
+    num_mlps = len(jax_args.net.mlp_hiddens)
+
+    num_layers = len(jax_args.net.channels)
+    for i in range(num_layers):
+        layer_params = network_params[f"GuezConvSequence_{i}"]
+        if i == 0:
+            lead_conv_params = layer_params["xXx_Input_xXx"]
+        else:
+            lead_conv_params = layer_params["Conv_0"]
+        layer_ref = torch_policy.features_extractor.flatten[0][i]
+        copy_wb(layer_ref.conv, lead_conv_params)
+
+        for j in range(2):
+            resnet_params = layer_params[f"GuezResidualBlock_{j}"]
+            residual_block = getattr(layer_ref, f"resnet{j}")
+
+            copy_wb(residual_block.conv, resnet_params["Conv_0"])
+
+    for i in range(num_mlps):
+        # Copy the final layer params
+        copy_wb(getattr(torch_policy.mlp_extractor.policy_net, f"fc{i}"), network_params[f"Dense_{i}"])
+        copy_wb(getattr(torch_policy.mlp_extractor.value_net, f"fc{i}"), network_params[f"Dense_{i}"])
+
+    copy_wb(torch_policy.action_net, jax_get("actor_params.Output", jax_params))
+    copy_wb(torch_policy.value_net, jax_get("critic_params.Output", jax_params))
+
+
 def load_jax_model_to_torch(path, env_cfg):
     env_cfg = convert_to_cleanba_config(env_cfg)
     vec_env = env_cfg.make()
     _, _, args, state, _ = cleanba_impala.load_train_state(path, env_cfg)
     cfg = jax_to_torch_cfg(args.net)
+    cfg.is_drc = isinstance(cfg, ConvLSTMPolicyConfig)
+    if cfg.is_drc:
+        cfg.features_extractor.transpose = True  # type: ignore
     policy_cls, kwargs = cfg.policy_and_kwargs(vec_env)  # type: ignore
     assert isinstance(policy_cls, Callable)
     action_space = vec_env.action_space
@@ -174,7 +238,11 @@ def load_jax_model_to_torch(path, env_cfg):
         **kwargs,
     )
     policy.eval()
-    copy_params_from_jax(policy, state.params["params"], args)
+
+    if cfg.is_drc:
+        copy_drc_params_from_jax(policy, state.params["params"], args)
+    else:
+        copy_resnet_params_from_jax(policy, state.params["params"], args)
     return cfg, policy
 
 
@@ -246,22 +314,39 @@ def prepare_cache_values(
     step: int,
     internal_steps: bool = False,
     is_concatenated_cache: bool = False,
-) -> list[list[th.Tensor]]:
-    key = "features_extractor.cell_list.{layer}.{hook}.{step}.{internal_step}"
-    int_steps = [0, 1, 2] if internal_steps else [2]
+    num_layers=3,
+    repeats_per_step=3,
+    is_drc: bool = True,
+) -> list[list[np.ndarray]]:
+    def to_numpy(tensor: th.Tensor | np.ndarray) -> np.ndarray:
+        if isinstance(tensor, th.Tensor):
+            return tensor.cpu().numpy()
+        return tensor
+
+    if isinstance(cache, np.ndarray) or isinstance(cache, th.Tensor):
+        return [[to_numpy(cache)[..., None, None]]]
+
+    if is_drc:
+        key = "features_extractor.cell_list.{layer}.{hook}.{step}.{internal_step}"
+        int_steps = list(range(repeats_per_step)) if internal_steps else [repeats_per_step - 1]
+    else:
+        # print("Cache keys:", cache.keys())
+        cache_values = [[to_numpy(v) for k, v in cache.items() if any([hook in k for hook in hooks])]]
+        return cache_values
+
     if is_concatenated_cache:
         key = key.replace(".{step}.{internal_step}", "")
         cache_values = [
-            th.tensor(cache[key.format(layer=layer, hook=hook)])
-            for layer in (range(3) if layer == -1 else [layer])
+            to_numpy(cache[key.format(layer=layer, hook=hook)])
+            for layer in (range(num_layers) if layer == -1 else [layer])
             for hook in hooks
         ]
         cache_values = [cache_values]
     else:
         cache_values = [
             [
-                cache[key.format(layer=layer, step=step, internal_step=int_step, hook=hook)]
-                for layer in (range(3) if layer == -1 else [layer])
+                to_numpy(cache[key.format(layer=layer, step=step, internal_step=int_step, hook=hook)])
+                for layer in (range(num_layers) if layer == -1 else [layer])
                 for hook in hooks
             ]
             for int_step in int_steps
@@ -269,7 +354,18 @@ def prepare_cache_values(
     return cache_values
 
 
-def predict(cache, probe, train_on, step: int, internal_steps: bool = False, is_concatenated_cache=False, logits=False):
+def predict(
+    cache,
+    probe,
+    train_on,
+    step: int,
+    internal_steps: bool = False,
+    is_concatenated_cache=False,
+    logits=False,
+    num_layers=3,
+    repeats_per_step=3,
+    is_drc: bool = True,
+):
     """Predict the probe on the activations of the policy.
 
     Args:
@@ -283,7 +379,17 @@ def predict(cache, probe, train_on, step: int, internal_steps: bool = False, is_
     Returns:
         np.ndarray: Probe predictions.
     """
-    cache_values = prepare_cache_values(cache, train_on.layer, train_on.hooks, step, internal_steps, is_concatenated_cache)
+    cache_values = prepare_cache_values(
+        cache,
+        train_on.layer,
+        train_on.hooks,
+        step,
+        internal_steps,
+        is_concatenated_cache,
+        num_layers,
+        repeats_per_step,
+        is_drc,
+    )
 
     assert all(
         [len(cache_value.shape) == 4 for cache_values_at_a_step in cache_values for cache_value in cache_values_at_a_step]
@@ -291,10 +397,10 @@ def predict(cache, probe, train_on, step: int, internal_steps: bool = False, is_
     # assert len(cache_values.shape) == 4
     s, b, _, h, w = len(cache_values), *cache_values[0][0].shape
     if train_on.grid_wise:
-        cache_values = [th.cat(cache_values_at_a_step, dim=1) for cache_values_at_a_step in cache_values]
-        stack_cache_values = th.stack(cache_values, dim=0)
-        stack_cache_values = stack_cache_values.permute(0, 1, 3, 4, 2)
-        stack_cache_values = stack_cache_values.reshape(-1, stack_cache_values.shape[-1]).cpu()
+        cache_values = [np.concatenate(cache_values_at_a_step, axis=1) for cache_values_at_a_step in cache_values]
+        stack_cache_values = np.stack(cache_values, axis=0)
+        stack_cache_values = np.transpose(stack_cache_values, (0, 1, 3, 4, 2))
+        stack_cache_values = stack_cache_values.reshape(-1, stack_cache_values.shape[-1])
         if logits:
             probe_preds = probe.decision_function(stack_cache_values)
         else:
@@ -305,18 +411,18 @@ def predict(cache, probe, train_on, step: int, internal_steps: bool = False, is_
             probe_preds = probe_preds.reshape(s, b, h, w)
     else:
         cache_values = [
-            th.cat(
+            np.concatenate(
                 [
                     cache_value_at_a_step.reshape(cache_value_at_a_step.shape[0], -1)
                     for cache_value_at_a_step in cache_values_at_a_step
                 ],
-                dim=1,
+                axis=1,
             )
             for cache_values_at_a_step in cache_values
         ]
-        stack_cache_values = th.stack(cache_values, dim=0)
+        stack_cache_values = np.stack(cache_values, axis=0)
         # stack_cache_values = stack_cache_values.reshape(*stack_cache_values.shape[:2], -1)
-        stack_cache_values = stack_cache_values.reshape(-1, stack_cache_values.shape[-1]).cpu()
+        stack_cache_values = stack_cache_values.reshape(-1, stack_cache_values.shape[-1])
         if logits:
             probe_preds = probe.decision_function(stack_cache_values)
             probe_preds = probe_preds.reshape(s, b, -1)
@@ -393,6 +499,10 @@ def play_level(
     names_filter=None,
     obs_reference=None,  # updates current observation to this variable. Used to get base features for interpretable_forward
     use_interpretable_forward: bool = False,
+    re_hook_filter: str = "",  # empty string means no filter
+    return_cache=True,
+    repeats_per_step=3,
+    state=None,
 ) -> PlayLevelOutput:
     """Execute the policy on the environment and the probe on the policy's activations.
 
@@ -428,28 +538,42 @@ def play_level(
     eps_solved = th.zeros(N, dtype=th.bool)
     episode_lengths = th.zeros(N, dtype=th.int32)
 
-    state = policy_th.recurrent_initial_state(N, device=device)
+    is_drc = True
+    try:
+        if state is None:
+            state = policy_th.recurrent_initial_state(N, device=device)
+        num_layers = len(policy_th.features_extractor.cell_list)
+    except AttributeError:
+        is_drc = False
+        state = None
+        num_layers = -1
     obs = start_obs
     r, d, t = [0.0], th.tensor([False] * N, dtype=th.bool, device=device), th.tensor([False] * N, dtype=th.bool, device=device)
+
+    eps_start = th.tensor([0.0] * N, dtype=th.bool, device=device)
+    fe_kwargs = {"use_interpretable_forward": use_interpretable_forward}
     for i in range(max_steps):
         if obs_reference is not None:
             obs_reference[:] = obs.cpu()
-        (distribution, state), cache = run_fn_with_cache(
+        extra_args = (state, eps_start) if state is not None else ()
+        extra_kwargs = {"feature_extractor_kwargs": fe_kwargs} if state is not None else {}
+        model_output, cache = run_fn_with_cache(
             policy_th,
             "get_distribution",
             obs,
-            state,
-            th.tensor([0.0] * N, dtype=th.bool, device=device),
+            *extra_args,
             # return_repeats=False,
             fwd_hooks=fwd_hooks if (hook_steps == -1) or (i in hook_steps) else None,
-            names_filter=names_filter,
-            feature_extractor_kwargs={"use_interpretable_forward": use_interpretable_forward},
+            names_filter=names_filter if return_cache else [],
+            **extra_kwargs,  # type: ignore
         )
+        distribution, state = model_output if is_drc else (model_output, None)
         best_act = distribution.get_actions(deterministic=True)
         all_act_dist.append(distribution.distribution.probs.detach())
         all_acts.append(best_act)
         all_logits.append(distribution.distribution.logits.detach())
-        all_cache.append(cache)
+        if return_cache:
+            all_cache.append(cache)
         if i >= thinking_steps:
             try:
                 obs, r, d, t, _ = env.step(best_act.cpu().numpy())
@@ -472,7 +596,17 @@ def play_level(
             all_rewards.append(r)
 
         for pidx, (probe, probe_train_on) in enumerate(zip(probes, probe_train_ons)):
-            probe_out = predict(cache, probe, probe_train_on, step=0, internal_steps=internal_steps, logits=probe_logits)
+            probe_out = predict(
+                cache,
+                probe,
+                probe_train_on,
+                step=0,
+                internal_steps=internal_steps,
+                logits=probe_logits,
+                num_layers=num_layers,
+                repeats_per_step=repeats_per_step,
+                is_drc=is_drc,
+            )
             if N == 1:
                 probe_out = probe_out.squeeze(1)
             if not internal_steps:
@@ -493,7 +627,7 @@ def play_level(
         rewards=th.tensor(np.array(all_rewards)),
         lengths=episode_lengths,
         solved=eps_solved,
-        cache=join_cache_across_steps(all_cache),
+        cache=join_cache_across_steps(all_cache, re_hook_filter=re_hook_filter) if return_cache else None,
         info=info,
         probe_outs=[np.stack(probe_out) for probe_out in all_probe_outs],
         sae_outs=th.stack(all_sae_outs) if sae else None,
@@ -571,16 +705,16 @@ def join_cache_across_steps(cache_list, re_hook_filter=""):
             if match is not None:
                 prefix, pos, rep = match.groups()
                 if prefix not in new_cache[i]:
-                    new_cache[i][prefix] = [(int(pos), int(rep), v[None, ...])]
+                    new_cache[i][prefix] = [(int(pos), int(rep), v)]
                 else:
-                    new_cache[i][prefix].append((int(pos), int(rep), v[None, ...]))
+                    new_cache[i][prefix].append((int(pos), int(rep), v))
             elif re.match(rf"(.*{re_hook_filter})$", k) is not None:
                 new_cache[i][k] = [(0, 0, v)]
     final_cache = {}
     for k in new_cache[0].keys():
-        for lx in new_cache:
-            assert sorted(lx[k], key=lambda e: (e[0], e[1])) == lx[k]
-        final_cache[k] = np.concatenate([x for lx in new_cache for _, _, x in sorted(lx[k], key=lambda e: (e[0], e[1]))])
+        # for lx in new_cache:
+        #     assert sorted(lx[k], key=lambda e: (e[0], e[1])) == lx[k]
+        final_cache[k] = np.stack([x for lx in new_cache for _, _, x in lx[k]])
     return final_cache
 
 
@@ -660,8 +794,12 @@ def run_fn_with_cache(
         else:
             fwd_hooks = fwd_hooks + name_fake_hooks
 
-    with hooked_model.input_dependent_hooks_context(
-        *model_args, fwd_hooks=fwd_hooks, bwd_hooks=bwd_hooks, setup_all_input_hooks=setup_all_input_hooks, **model_kwargs
+    with (
+        hooked_model.input_dependent_hooks_context(
+            *model_args, fwd_hooks=fwd_hooks, bwd_hooks=bwd_hooks, setup_all_input_hooks=setup_all_input_hooks, **model_kwargs
+        )
+        if hasattr(hooked_model, "input_dependent_hooks_context")
+        else nullcontext()
     ):
         fwd_hooks = [(name, hook) for name, hook in (fwd_hooks if fwd_hooks else []) if hook is not None]
         bwd_hooks = bwd_hooks if bwd_hooks else []

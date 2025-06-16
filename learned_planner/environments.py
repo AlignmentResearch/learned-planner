@@ -9,22 +9,9 @@ import random
 import warnings
 from functools import partial
 from pathlib import Path
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Callable,
-    ClassVar,
-    Dict,
-    Generic,
-    List,
-    Literal,
-    Optional,
-    Sequence,
-    Type,
-    TypeVar,
-    Union,
-)
+from typing import TYPE_CHECKING, Any, Callable, Dict, Generic, List, Literal, Optional, Sequence, Type, TypeVar, Union
 
+import cleanba.envs  # noqa: F401
 import gym_sokoban  # noqa: F401  # type: ignore[import]
 import gymnasium as gym
 import numpy as np
@@ -32,12 +19,7 @@ import torch as th
 from gymnasium.spaces import Box, Discrete
 from stable_baselines3.common.type_aliases import check_cast
 from stable_baselines3.common.vec_env import VecEnv
-from stable_baselines3.common.vec_env.base_vec_env import (
-    VecEnvIndices,
-    VecEnvObs,
-    VecEnvStepReturn,
-    tile_images,
-)
+from stable_baselines3.common.vec_env.base_vec_env import VecEnvIndices, VecEnvObs, VecEnvStepReturn, tile_images
 from stable_baselines3.common.vec_env.util import obs_as_tensor
 from typing_extensions import Self
 
@@ -67,8 +49,13 @@ DEFAULT_N_ENVS = 2
 @dataclasses.dataclass
 class EnvConfig(abc.ABC):
     max_episode_steps: int
+    env_id: str = "NotSet"
     n_envs: int = DEFAULT_N_ENVS  # Number of environments
     n_envs_to_render: int = min(64, DEFAULT_N_ENVS)  # Number of environments to render
+
+    # @property
+    # def env_name(self) -> str:
+    #     return self.env_id
 
     def __post_init__(self):
         assert self.n_envs_to_render <= self.n_envs
@@ -320,6 +307,7 @@ class NNRewardVecEnv(BasicVecEnv):
 
 @dataclasses.dataclass
 class EnvpoolVecEnvConfig(EnvConfig):
+    env_id: str = "NotSet"
     max_episode_steps: int = 120
     num_threads: int = 0
     thread_affinity_offset: int = -1
@@ -327,10 +315,6 @@ class EnvpoolVecEnvConfig(EnvConfig):
     max_num_players: int = 1
 
     px_scale: int = 4  # How much does each pixel get scaled when rendering
-
-    @abc.abstractproperty
-    def env_id(self) -> str:
-        ...
 
     def make(self: Self, device: th.device) -> "EnvpoolVecEnv[Self]":
         return EnvpoolVecEnv(self, device=device)
@@ -366,7 +350,11 @@ class EnvpoolVecEnv(BasicVecEnv, Generic[EnvpoolVecEnvConfigT]):
             batch_size=cfg.n_envs,
         )
         SPECIAL_KEYS = {"base_path", "gym_reset_return_info"}
-        env_kwargs = {k: getattr(cfg, k) for k in dummy_spec._config_keys if not (k in special_kwargs or k in SPECIAL_KEYS)}
+        env_kwargs = {
+            k: getattr(cfg, k)
+            for k in dummy_spec._config_keys
+            if not (k in special_kwargs or k in SPECIAL_KEYS) and hasattr(cfg, k)
+        }
 
         self.cfg = cfg
         self.num_envs_to_render = cfg.n_envs_to_render
@@ -447,9 +435,11 @@ class EnvpoolSokobanVecEnvConfig(EnvpoolVecEnvConfig):
       For this reason, we have episodes with random lengths.
     """
 
+    env_id: str = "Sokoban-v0"
     reward_finished: float = 10.0  # Reward for completing a level
     reward_box: float = 1.0  # Reward for putting a box on target
     reward_step: float = -0.1  # Reward for completing a step
+    reward_noop: float = 0.0  # Addtional Reward for doing nothing
     verbose: int = 0  # Verbosity level [0-2]
     min_episode_steps: int = 0  # The minimum length of an episode.
     load_sequentially: bool = False
@@ -469,10 +459,6 @@ class EnvpoolSokobanVecEnvConfig(EnvpoolVecEnvConfig):
         assert self.min_episode_steps <= self.max_episode_steps, f"{self.min_episode_steps=} {self.max_episode_steps=}"
         if not self.load_sequentially:
             assert self.n_levels_to_load == -1, "`n_levels_to_load` must be -1 when `load_sequentially` is False"
-
-    @property
-    def env_id(self) -> str:
-        return "Sokoban-v0"
 
     @property
     def dim_room(self) -> int:
@@ -505,6 +491,7 @@ class BaseSokobanEnvConfig(EnvConfig):
     reward_finished: float = 10.0  # Reward for completing a level
     reward_box: float = 1.0  # Reward for putting a box on target
     reward_step: float = -0.1  # Reward for completing a step
+    nn_without_noop: bool = True  # Setting default True since we load the DRC trained without noop
 
     seed: int = dataclasses.field(default_factory=lambda: random.randint(0, 2**31 - 1))
     reset: bool = False
@@ -541,7 +528,7 @@ class BaseSokobanEnvConfig(EnvConfig):
 class SokobanConfig(BaseSokobanEnvConfig):
     "Procedurally-generated Sokoban"
 
-    name: ClassVar[str] = "Sokoban-v2"
+    env_id: str = "Sokoban-v2"
 
     dim_room: Optional[tuple[int, int]] = None
     num_boxes: int = 4
@@ -555,7 +542,7 @@ class SokobanConfig(BaseSokobanEnvConfig):
                 kwargs[k] = a
         make_fn = partial(
             make_env,
-            self.name,
+            self.env_id,
             **kwargs,
             **self.env_reward_kwargs(),
         )
@@ -566,7 +553,7 @@ class SokobanConfig(BaseSokobanEnvConfig):
 class BoxobanConfig(BaseSokobanEnvConfig):
     "Sokoban levels from the Boxoban data set"
 
-    name: ClassVar[str] = "Boxoban-Val-v1"  # Any Boxoban-*-* name will work
+    env_id: str = "Boxoban-Val-v1"  # Any Boxoban-*-* name will work
 
     cache_path: Path = Path(__file__).parent.parent / ".sokoban_cache"
     split: Literal["train", "valid", "test", None] = "train"
@@ -583,7 +570,7 @@ class BoxobanConfig(BaseSokobanEnvConfig):
 
         make_fn = partial(
             make_env,
-            self.name,
+            self.env_id,
             cache_path=self.cache_path,
             split=self.split,
             difficulty=self.difficulty,
@@ -593,6 +580,37 @@ class BoxobanConfig(BaseSokobanEnvConfig):
         return make_fn
 
 
+
+@dataclasses.dataclass
+class MiniPacManConfig(EnvConfig):
+    env_id: str = "MiniPacMan-v0"
+    mode: str = "regular"
+    npills: int = 3
+    pill_duration: int = 20
+    stochasticity: float = 0.05
+    nghosts_init: int = 3
+    ghost_speed_init: float = 0.5
+    ghost_speed_increase: float = 0.1
+    max_episode_steps: int = 1000
+    nn_without_noop: bool = True
+
+    @property
+    def make(self) -> Callable[[], gym.Env]:
+        make_fn = partial(
+            make_env,
+            self.env_id,
+            mode=self.mode,
+            npills=self.npills,
+            pill_duration=self.pill_duration,
+            stochasticity=self.stochasticity,
+            nghosts_init=self.nghosts_init,
+            ghost_speed_init=self.ghost_speed_init,
+            ghost_speed_increase=self.ghost_speed_increase,
+            frame_cap=self.max_episode_steps,
+        )
+        return make_fn
+
+
 @dataclasses.dataclass
 class FixedBoxobanConfig(BoxobanConfig):
-    name: ClassVar[str] = "FixedBoxoban-Val-v1"
+    env_id: str = "FixedBoxoban-Val-v1"
