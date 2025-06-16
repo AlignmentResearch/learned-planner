@@ -111,6 +111,7 @@ class ActivationsDataset(Dataset):
 
         self.labels_type = labels_type
         self.level_files = sum((glob(str(p / "*.pkl")) for p in self.dataset_path), [])
+        assert len(self.level_files) >= 5, f"{len(self.level_files)=}"
         self.rng = np.random.default_rng(seed)
         self.rng.shuffle(self.level_files)
         self.train = train
@@ -135,7 +136,7 @@ class ActivationsDataset(Dataset):
         self.only_env_steps = only_env_steps
         self.region_3x3 = region_3x3
         self.horizon = horizon
-
+        self.grid_wise = is_grid_wise_dataset(self.labels_type)
         if load_data:
             self.load_data(num_data_points)
 
@@ -206,8 +207,9 @@ class ActivationsDataset(Dataset):
                 self.multioutput = True
             else:
                 raise ValueError(f"Unknown labels type {self.labels_type}")
-        except AssertionError:
+        except AssertionError as e:
             print(f"Skipping {file_name} due to assertion error")
+            print(e)
             return [], [], np.array([])
 
         if self.grid_wise and self.balance_classes:
@@ -281,7 +283,6 @@ class ActivationsDataset(Dataset):
 
         results = []
         map_fn = partial(self.load_file, num_data_points=num_data_points_per_file)
-        # with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
         with concurrent.futures.ProcessPoolExecutor(max_workers=16) as executor:
             results = list(tqdm(executor.map(map_fn, self.level_files), total=len(self.level_files)))
         # results = list(tqdm(map(map_fn, self.level_files), total=len(self.level_files)))
@@ -424,13 +425,13 @@ class TrainProbeConfig(ABCCommandConfig):
     """Arguments to train or evaluate probes (and their corresponding policies)."""
 
     dataset_path: Path = Path("asdf")
+    activations_dataset_args: dict[str, str | int | float | bool] = dataclasses.field(default_factory=dict)
     learning_rate: float = 1e-4
     epochs: int = 10
     batch_size: int = 512
     grad_clip: float = 1.0
     weight_decay: float = 0.01
     weight_decay_type: str = "l1"
-    dataset_size: Optional[int] = None
     wandb_name: Optional[str] = None
     policy_path: Optional[str] = None
     eval_epoch_interval: int = 10
@@ -467,7 +468,8 @@ def train_setup(args: TrainProbeConfig, eval_cfg: EnvConfig):
         policy_cfg, policy = None, None
     dataset_path = args.dataset_path
     if dataset_path.is_dir():
-        acts_ds = ActivationsDataset(dataset_path, num_data_points=args.dataset_size)
+        acts_ds = ActivationsDataset(dataset_path, **args.activations_dataset_args)
+        # acts_ds = ActivationsDataset(dataset_path)
         train_ds, test_ds = random_split(acts_ds, [0.8, 0.2])
     else:
         try:
@@ -819,7 +821,8 @@ def main(args: TrainProbeConfig, run_dir: Path):
     if args.eval_only and not args.use_sklearn:
         dataset_path = args.dataset_path
         if dataset_path.is_dir():
-            acts_ds = ActivationsDataset(dataset_path, num_data_points=args.dataset_size)
+            acts_ds = ActivationsDataset(dataset_path, **args.activations_dataset_args)
+            # acts_ds = ActivationsDataset(dataset_path)
         else:
             acts_ds = th.load(dataset_path)
 
