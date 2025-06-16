@@ -3,60 +3,71 @@ import pathlib
 import re
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 import learned_planner.interp.plot  # noqa
 
+dataset_name = "valid_medium"
 steps_to_think_for_pe = [0, 2, 4, 8, 12, 16]
-network_name = "drc33"
+network_name = "drc_33"
 plots_dir = pathlib.Path("./")
 
 success_rates = {}
-dataset_name = "valid_medium"
-csv_file = pathlib.Path(__file__).parent / "data" / f"{network_name}_{dataset_name}_success_across_thinking_steps.csv"
-df = pd.read_csv(csv_file, index_col="Step")
-select_columns = [col.endswith("_episode_successes") for col in df.columns]
-df = df.loc[:, select_columns]
-run_name = df.columns[0].split(" - ")[0]
-new_cols = [int(re.search(r"(\d+)_episode_successes$", col).group(1)) for col in df.columns]  # type: ignore
-df.columns = new_cols
+csv_file = pathlib.Path(__file__).parent / "data" / f"{network_name}.csv"
+df = pd.read_csv(csv_file, index_col="step")
+df = df * 100
+select_columns = [dataset_name in col and col.endswith("_episode_successes_mean") for col in df.columns]
+df_mean = df.loc[:, select_columns]
+new_cols = [int(re.search(r"(\d+)_episode_successes_mean$", col).group(1)) for col in df_mean.columns]  # type: ignore
+df_mean.columns = new_cols
 
-success_rates[network_name] = df.iloc[-1].copy()
+success_rates[network_name] = df_mean.iloc[-1].copy()
 
-df = df[steps_to_think_for_pe]
-csv_file = pathlib.Path(__file__).parent / "data" / f"resnet_{dataset_name}_success_across_thinking_steps.csv"
-df_resnet = pd.read_csv(csv_file, index_col="Step")
-
-per_step = df * 100
-# per_step = per_step - per_step.loc[0]
+df_mean = df_mean[steps_to_think_for_pe]
+csv_file = pathlib.Path(__file__).parent / "data" / "resnet.csv"
+df_resnet = pd.read_csv(csv_file, index_col="step")
 
 fig, axes = plt.subplots(2, 1, figsize=(3.25, 2.5), sharex=True, height_ratios=[3, 1])
+x = df_mean.index
+for i in range(len(df_mean.T)):
+    this_step_proportion = i / len(df_mean.T)
+    df_mean.iloc[:, i].plot(color=plt.get_cmap("viridis")(this_step_proportion), ax=axes[0], legend=False)
+    steps_to_think = steps_to_think_for_pe[i]
+    axes[0].fill_between(
+        x,
+        df.loc[:, f"{dataset_name}/{steps_to_think:02d}_episode_successes_min"],
+        df.loc[:, f"{dataset_name}/{steps_to_think:02d}_episode_successes_max"],
+        alpha=0.2,
+        color=plt.get_cmap("viridis")(this_step_proportion),
+    )
 
-for i in range(len(per_step.T)):
-    this_step_proportion = i / len(per_step.T)
-    per_step.iloc[:, i].plot(color=plt.get_cmap("viridis")(this_step_proportion), ax=axes[0], legend=False)
+(df_resnet[f"{dataset_name}/00_episode_successes_mean"] * 100).plot(color="C1", ax=axes[0], label="resnet")
+axes[0].fill_between(
+    df_resnet.index,
+    df_resnet[f"{dataset_name}/00_episode_successes_min"] * 100,
+    df_resnet[f"{dataset_name}/00_episode_successes_max"] * 100,
+    alpha=0.2,
+    color="C1",
+)
 
-resnet_run_name = str(df_resnet.columns[0]).split(" - ")[0]
-(df_resnet[f"{resnet_run_name} - {dataset_name}/00_episode_successes"] * 100).plot(color="C1", ax=axes[0], label="resnet")
-(per_step.max(axis=1) - per_step[0]).plot(ax=axes[1], label="valid_medium", color="C0")
-
-dataset_name = "hard"
-csv_file = pathlib.Path(__file__).parent / "data" / f"{network_name}_{dataset_name}_success_across_thinking_steps.csv"
-df = pd.read_csv(csv_file, index_col="Step")
-select_columns = [col.endswith("_episode_successes") for col in df.columns]
-df = df.loc[:, select_columns]
-run_name = df.columns[0].split(" - ")[0]
-new_cols = [int(re.search(r"(\d+)_episode_successes$", col).group(1)) for col in df.columns]  # type: ignore
-df.columns = new_cols
-
-success_rates[network_name] = df.iloc[-1].copy()
-
-df = df[steps_to_think_for_pe]
-csv_file = pathlib.Path(__file__).parent / "data" / f"resnet_{dataset_name}_success_across_thinking_steps.csv"
-df_resnet = pd.read_csv(csv_file, index_col="Step")
-
-per_step = df * 100
-(per_step.max(axis=1) - per_step[0]).plot(ax=axes[1], label="hard", color="C3")
+# Planning Effect
+for ds_name in ["valid_medium", "hard"]:
+    planning_effect = []
+    seed, num_seeds = 0, 0
+    while True:
+        try:
+            success_rate_for_seed = df[[f"{ds_name}/{stt:02d}_episode_successes_{seed}" for stt in steps_to_think_for_pe]]
+            planning_effect.append(success_rate_for_seed.max(axis=1) - success_rate_for_seed.min(axis=1))
+            seed += 1
+            num_seeds += 1
+        except KeyError:
+            break
+    print(f"num_seeds: {num_seeds}")
+    planning_effect = np.array(planning_effect)
+    color = "C0" if ds_name == "valid_medium" else "C3"
+    axes[1].plot(x, planning_effect.mean(axis=0), label=ds_name, color=color)
+    axes[1].fill_between(x, planning_effect.min(axis=0), planning_effect.max(axis=0), alpha=0.2, color=color)
 
 axes[0].grid(True)
 axes[1].grid(True)
@@ -72,6 +83,8 @@ axes[0].set_xticks([7e7, 5e8, 1e9, 1.5e9, 2e9])
 # set xticklabels
 axes[0].set_xticklabels(["70M", "500M", "1B", "1.5B", "2B"])
 axes[1].legend(ncols=2, prop={"size": 8})
-plt.savefig(plots_dir / "fig1_with_valid_hard_plan_effect.pdf", format="pdf")
+plt.savefig(plots_dir / f"fig1_{dataset_name}_with_valid_hard_plan_effect.pdf", format="pdf")
 plt.show()
 plt.close()
+
+# %%

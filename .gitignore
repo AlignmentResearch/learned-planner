@@ -25,6 +25,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+**/.DS_Store
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -165,3 +166,10 @@ cython_debug/
 /.vs
 
 training/**
+0_think_step/
+k8s/
+wandb/
+videos/
+temp/
+plot/plots/
+new_plots/

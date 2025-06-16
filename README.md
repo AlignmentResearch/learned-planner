@@ -1,11 +1,17 @@
-# Learned Planner
+# Learned Planner & Interpreting Learned Search
 
 ![Learned Planner - Level18](https://github.com/user-attachments/assets/764939ec-1cb7-482d-a42d-72609aa76b23)
 
 
-This repository contains the evaluation and interpretability code for the paper "Planning behavior in a recurrent neural network that plays Sokoban". ([OpenReview-ICML-MI-Workshop](https://openreview.net/forum?id=T9sB3S2hok)) ([arXiv](https://arxiv.org/abs/2407.15421))
+This repository contains the evaluation and interpretability code for the papers:
+- "Planning behavior in a recurrent neural network that plays Sokoban". ([OpenReview-ICML-MI-Workshop](https://openreview.net/forum?id=T9sB3S2hok)) ([arXiv](https://arxiv.org/abs/2407.15421))
+  - This paper shows that the DRC(3, 3) represents its plan causally, which can be found using linear probes trained to predict all future moves. We also show that the network *deliberately* paces around in cycles at the start of difficult levels to get a better plan using more compute. The network also generalizes to 3-4x level sizes and number of boxes.
+- "Interpreting learned search: finding a transition model and value function in an RNN that plays Sokoban". ([arXiv](https://arxiv.org/abs/2506.10138))
+  - This paper reverse-engineers the planning algorithm showing the network has an internal transition model and value function, and performs a bidirectional search, thus providing a concrete agentic example of a [*mesa-optimizer*](https://arxiv.org/abs/1906.01820).
 
 The [lp-training repository](https://github.com/AlignmentResearch/lp-training/) lets you train the neural networks on Sokoban. If you just want to train the DRC networks, you should go there.
+
+The code for the Interpreting Learned Search paper is in the `learned_planner/learned_search` directory. Please refer to the [`learned_planner/learned_search/README.md`](learned_planner/learned_search/README.md) file for more details.
 
 ## Installation
 
@@ -26,7 +32,7 @@ We install `jax[cpu]` by default. JAX is only used to obtain the cache in the `p
 
 ```bash
 pip uninstall jax
-pip install jax[cuda]
+pip install jax[cuda]==0.4.34
 ```
 
 ### Optional dependency: Envpool
@@ -35,7 +41,7 @@ We implemented a faster version of the Sokoban environment in C++ using the [Env
 works on Linux as of now. We provide the python wheels for the library in the [Envpool](https://github.com/AlignmentResearch/envpool/) repository:
 
 ```bash
-pip install https://github.com/AlignmentResearch/envpool/releases/download/v0.2.0/envpool-0.8.4-cp310-cp310-linux_x86_64.whl
+pip install https://github.com/AlignmentResearch/envpool/releases/download/v0.3.0/envpool-0.8.4-cp310-cp310-linux_x86_64.whl
 ```
 
 To build the envpool library from source, follow the instructions in the original [documentation](https://envpool.readthedocs.io/en/latest/content/build.html) using our forked envpool version.
@@ -122,9 +128,9 @@ python learned_planner/interp/save_ds.py --dataset_path {activation_cache_path} 
 
 ### Training the probes or SAEs
 
-The files provided in `experiments/probes/` defines the hyperparameter search space for different probes. Running the files will train a probe with each hyperparameter configuration. The `plot/interp/probes/probe_hp_search.py` script can be used to plot the results of the hyperparameter search and pick the best probe on the validation set. The scripts in experiments directory run the appropriate shell command to train the probes. Alternatively, you can directly train the probes using the command below. The default config is available in `learned_planners/configs/train_probe.py`. You can overwrite arguments in the config using the `cmd.{argument}={value}` syntax. 
+The files provided in `experiments/probes/` defines the hyperparameter search space for different probes. Running the files will train a probe with each hyperparameter configuration. The `plot/interp/probes/probe_hp_search.py` script can be used to plot the results of the hyperparameter search and pick the best probe on the validation set. The scripts in experiments directory run the appropriate shell command to train the probes. Alternatively, you can directly train the probes using the command below. The default config is available in `learned_planner/configs/train_probe.py`. You can overwrite arguments in the config using the `cmd.{argument}={value}` syntax. 
 ```bash
-WANDB_MODE=disabled python -m learned_planners --from-py-fn=learned_planners.configs.train_probe:train_local cmd.train_on.layer={layer} cmd.train_on.dataset_name={dataset_name} cmd.dataset_path={dataset_path}
+WANDB_MODE=disabled python -m learned_planner --from-py-fn=learned_planner.configs.train_probe:train_local cmd.train_on.layer={layer} cmd.train_on.dataset_name={dataset_name} cmd.dataset_path={dataset_path}
 ```
 
 The files provided in `experiments/sae/` defines the hyperparameter search space for training the SAEs.
@@ -152,11 +158,23 @@ The `plot/interp/save_{probe/sae}_videos.py` script can be used to save the vide
 If you use this code, please cite our work:
 
 ```bibtex
-@inproceedings{garriga-alonso2024planning,
-    title={Planning behavior in a recurrent neural network that plays Sokoban},
-    author={Adri{\`a} Garriga-Alonso and Mohammad Taufeeque and Adam Gleave},
-    booktitle={ICML 2024 Workshop on Mechanistic Interpretability},
-    year={2024},
-    url={https://openreview.net/forum?id=T9sB3S2hok}
+@misc{taufeeque2025planningrecurrentneuralnetwork,
+      title={Planning in a recurrent neural network that plays Sokoban}, 
+      author={Mohammad Taufeeque and Philip Quirke and Maximilian Li and Chris Cundy and Aaron David Tucker and Adam Gleave and Adrià Garriga-Alonso},
+      year={2025},
+      eprint={2407.15421},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2407.15421}, 
+}
+
+@misc{taufeeque2025interpretinglearnedsearchfinding,
+      title={Interpreting learned search: finding a transition model and value function in an RNN that plays Sokoban}, 
+      author={Mohammad Taufeeque and Aaron David Tucker and Adam Gleave and Adrià Garriga-Alonso},
+      year={2025},
+      eprint={2506.10138},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2506.10138}, 
 }
 ```

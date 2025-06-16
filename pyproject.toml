@@ -98,6 +98,7 @@ dependencies = [
     "torchvision ~=0.19.1",
     "jax ==0.4.34",
     "typeguard",
+    "kaleido",
     "stable_baselines3 @ git+https://github.com/AlignmentResearch/learned-planners-stable-baselines3.git",
     "gym_sokoban @ git+https://github.com/AlignmentResearch/gym-sokoban.git",
     "farconf @ git+https://github.com/AlignmentResearch/farconf.git",

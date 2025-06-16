@@ -43,6 +43,45 @@ def _extend_for_multilayer(param: T | Sequence[T], length: int) -> list[T]:
     return [param] * length
 
 
+class NCHWtoNHWC(nn.Module):
+    """Permute tensor from (N, C, H, W) to (N, H, W, C)."""
+
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        # if x.ndim != 4:
+        #     raise ValueError(f"Input tensor must be 4D (NCHW), but got {x.ndim}D")
+        return x.moveaxis(-3, -1).contiguous()
+
+
+class Conv2dSame(th.nn.Conv2d):
+    def calc_same_pad(self, i: int, k: int, s: int, d: int) -> int:
+        return max((math.ceil(i / s) - 1) * s + (k - 1) * d + 1 - i, 0)
+
+    def forward(self, input: th.Tensor) -> th.Tensor:
+        ih, iw = input.size()[-2:]
+
+        pad_h = self.calc_same_pad(i=ih, k=self.kernel_size[0], s=self.stride[0], d=self.dilation[0])
+        pad_w = self.calc_same_pad(i=iw, k=self.kernel_size[1], s=self.stride[1], d=self.dilation[1])
+
+        if pad_h > 0 or pad_w > 0:
+            input = th.nn.functional.pad(input, [pad_w // 2, pad_w - pad_w // 2, pad_h // 2, pad_h - pad_h // 2])
+        return th.nn.functional.conv2d(
+            input,
+            self.weight,
+            self.bias,
+            self.stride,
+            self.padding,
+            self.dilation,
+            self.groups,
+        )
+
+
+# conv_layer_s2_same = Conv2dSame(in_channels=3, out_channels=64, kernel_size=(7, 7), stride=(2, 2), groups=1, bias=True)
+# out = conv_layer_s2_same(th.zeros(1, 3, 224, 224))
+
+
 @dataclasses.dataclass
 class ConvConfig:
     features: int
@@ -62,12 +101,18 @@ class ConvConfig:
         padding = self.padding
         if isinstance(padding, str):
             padding = padding.lower()
-        return nn.Conv2d(
+
+        strides = self.strides if isinstance(self.strides, tuple) else (self.strides, self.strides)
+        strides = th.tensor(strides)
+        use_same_conv = padding == "same" and th.any(strides > 1).item()
+        conv_cls = Conv2dSame if use_same_conv else nn.Conv2d
+        # conv_cls = nn.Conv2d
+        return conv_cls(
             in_channels=in_channels,
             out_channels=self.features,
             kernel_size=self.kernel_size,
             stride=self.strides,
-            padding=padding,
+            padding=0 if use_same_conv else self.padding,
             padding_mode=self.padding_mode.lower(),
             bias=bias,
             **kwargs,
@@ -305,11 +350,13 @@ class ConvLSTMCell(nn.Module):
 
         def _compute_shape(s: tuple[int, int], c: nn.Conv2d, i: int) -> int:
             pad: int
+            if isinstance(conv, Conv2dSame):
+                return s[i] // c.stride[i]
             if isinstance(c.padding, str):
                 if c.padding == "valid":
                     pad = 0
                 elif c.padding == "same":
-                    return s[i]
+                    return s[i] // c.stride[i]
                 else:
                     raise NotImplementedError(f"Don't know how to handle {c.padding=}")
             else:
@@ -378,6 +425,7 @@ class ConvLSTMOptions(BaseFeaturesExtractorConfig):
     residual: bool = False
     skip_final: bool = True
     fancy_init: bool = False  # TODO: run different values of this setting in test
+    transpose: bool = False  # adds NCHWtoNHWC layer to the end. Useful for converting jax models to pytorch
 
     def kwargs(self, vec_env: VecEnv) -> dict[str, Any]:
         return dict(features_extractor_class=ConvLSTMFeaturesExtractor, features_extractor_kwargs=dict(cfg=self))
@@ -440,6 +488,8 @@ class ConvLSTMFeaturesExtractor(RecurrentFeaturesExtractor[th.Tensor, ConvLSTMSt
         self.pre_model = nn.Sequential(*pre_model)
         self.hook_pre_model = HookPoint()
 
+        self.transpose_layer = NCHWtoNHWC() if cfg.transpose else nn.Identity()
+
     def forward(
         self,
         observations: th.Tensor,
@@ -494,8 +544,10 @@ class ConvLSTMFeaturesExtractor(RecurrentFeaturesExtractor[th.Tensor, ConvLSTMSt
                     out_values[t] = state[-1][0] + (obs_input.unsqueeze(0) if self.cfg.skip_final else 0)
 
         if squeeze_end:
-            return out_values[0].view(batch_sz, -1), state
-        out = th.cat(out_values, dim=0).view(seq_len * multiplier, batch_sz, -1)
+            return self.transpose_layer(out_values[0]).view(batch_sz, -1), state
+
+        out = self.transpose_layer(th.cat(out_values, dim=0)).view(seq_len * multiplier, batch_sz, -1)
+
         return out, state
 
     def recurrent_initial_state(

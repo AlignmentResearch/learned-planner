@@ -15,19 +15,12 @@ from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.recurrent.buffers import SamplingType
-from stable_baselines3.common.recurrent.policies import (
-    BaseRecurrentActorCriticPolicy,
-    RecurrentActorCriticPolicy,
-)
+from stable_baselines3.common.recurrent.policies import BaseRecurrentActorCriticPolicy, RecurrentActorCriticPolicy
 from stable_baselines3.common.save_util import json_to_data
 from stable_baselines3.common.type_aliases import check_cast, non_null
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv, VecTransposeImage
 
-from learned_planner.common import (
-    PrefixEvalCallback,
-    WandbVecVideoRecorder,
-    catch_different_env_types_warning,
-)
+from learned_planner.common import PrefixEvalCallback, WandbVecVideoRecorder, catch_different_env_types_warning
 from learned_planner.convlstm import ConvLSTMOptions
 from learned_planner.environments import (
     BaseSokobanEnvConfig,
@@ -36,12 +29,7 @@ from learned_planner.environments import (
     NNRewardVecEnv,
     NNRewardVecEnvConfig,
 )
-from learned_planner.optimizers import (
-    AdamOptimizerConfig,
-    BaseLRSchedule,
-    BaseOptimizerConfig,
-    FlatLRSchedule,
-)
+from learned_planner.optimizers import AdamOptimizerConfig, BaseLRSchedule, BaseOptimizerConfig, FlatLRSchedule
 from learned_planner.policies import (
     BasePolicyConfig,
     BaseRecurrentPolicyConfig,
@@ -205,7 +193,7 @@ class ABCCommandConfig(abc.ABC):
 class BaseCommandConfig(ABCCommandConfig):
     """Common arguments to train and evaluate."""
 
-    policy: BasePolicyConfig = dataclasses.field(default_factory=BatchedRewardPolicyConfig)
+    policy: BasePolicyConfig = dataclasses.field(default_factory=lambda: BatchedRewardPolicyConfig())
     total_timesteps: int = 10000000000  # Total amount of time to train for
     alg: GenericPPOConfig = dataclasses.field(default_factory=PPOConfig)
     env: EnvConfig = dataclasses.field(default_factory=NNRewardVecEnvConfig)

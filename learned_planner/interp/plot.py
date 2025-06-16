@@ -1,37 +1,65 @@
 import os
+import re
+import shutil
 import time
 
+import imageio.v2 as imageio
 import matplotlib
 import matplotlib.cm as cm
 import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
+import plotly.io as pio
 from gym_sokoban.envs.sokoban_env import CHANGE_COORDINATES
 from matplotlib import animation
 from matplotlib import pyplot as plt
 from matplotlib.colors import ListedColormap
+from tqdm import tqdm
 
+from learned_planner.interp.channel_group import get_group_channels
 from learned_planner.interp.render_svg import fancy_obs
 from learned_planner.interp.utils import get_metrics, get_player_pos
 
 
-def apply_style():
+def apply_style(figsize, px_margin=None, px_use_default=True, font=8):
     style = {
         "font.family": "serif",
         "font.serif": "Times New Roman",
         "mathtext.fontset": "cm",
-        "font.size": 10,
-        "legend.fontsize": 10,
-        "axes.titlesize": 10,
-        "axes.labelsize": 10,
-        "xtick.labelsize": 10,
-        "ytick.labelsize": 10,
-        "figure.figsize": (3.25, 2),
+        "font.size": font,
+        "legend.fontsize": font,
+        "axes.titlesize": font,
+        "axes.labelsize": font,
+        "xtick.labelsize": font,
+        "ytick.labelsize": font,
+        "figure.figsize": figsize,
         "figure.constrained_layout.use": True,
     }
     matplotlib.rcParams.update(style)
 
+    # Convert figure size from inches to pixels (assuming ~96 DPI)
+    width_pixels = int(figsize[0] * 96)
+    height_pixels = int(figsize[1] * 96)
 
-apply_style()
+    custom_template = go.layout.Template(
+        layout=go.Layout(
+            font=dict(family="Times New Roman, serif", size=font),
+            legend=dict(font=dict(size=font)),
+            xaxis=dict(title=dict(font=dict(size=font)), tickfont=dict(size=font)),
+            yaxis=dict(title=dict(font=dict(size=font)), tickfont=dict(size=font)),
+            width=width_pixels,
+            height=height_pixels,
+            # If you need a layout with tight margins, adjust the margin dict as necessary
+            margin=px_margin,  # dict(l=50, r=50, t=50, b=50)
+        )
+    )
+    pio.templates["custom"] = custom_template
+    if not px_use_default:
+        pio.templates.default = "custom"
+    return width_pixels, height_pixels
+
+
+apply_style((3.25, 2))
 
 
 def plt_obs_with_cycle_probe(
@@ -99,7 +127,13 @@ def plt_obs_with_position_probe(
 
 
 def plt_obs_with_direction_probe(
-    probe_preds, gt_labels, ax, color_scheme=["red", "green", "blue"], vector: bool = False, scale: int = 1, offset: float = 0
+    probe_preds,
+    gt_labels,
+    ax,
+    color_scheme=["red", "green", "blue"],
+    vector: bool = False,
+    scale: int = 1,
+    offset: float = 0,
 ):
     """Helper function to plot the level image with the direction probe predictions."""
     if probe_preds.ndim == 2:
@@ -115,7 +149,13 @@ def plt_obs_with_direction_probe(
                 i += 0.5 + offset
                 j += 0.5 + offset
                 ax.arrow(
-                    scale * j, scale * (10 - i), delta_j, -delta_i, color=color, head_width=head_size, head_length=head_size
+                    scale * j,
+                    scale * (10 - i),
+                    delta_j,
+                    -delta_i,
+                    color=color,
+                    head_width=head_size,
+                    head_length=head_size,
                 )
             else:
                 i += offset
@@ -203,6 +243,7 @@ def save_video(
     remove_ticks=True,
     truncate_title=-1,
     fancy_sprite=False,
+    fps=2,
 ):
     """Save the video of the level given by all_obs. Video will be saved in the folder videos_{probe_type}.
 
@@ -221,6 +262,10 @@ def save_video(
     """
     if all_probe_infos:
         assert len(all_probes_preds) == len(all_probe_infos)
+    if len(all_probe_infos) > 0 and all_probe_infos[0].probe_type == "position":
+        all_probes_preds = [upsample(probe, all_obs.shape[-2], all_obs.shape[-1]) for probe in all_probes_preds]
+        all_gt_labels = [upsample(gt, all_obs.shape[-2], all_obs.shape[-1]) for gt in all_gt_labels]
+
     max_len = len(all_obs)
     if all_gt_labels:
         assert len(all_gt_labels) == len(all_probes_preds)
@@ -255,7 +300,7 @@ def save_video(
     max_fig_dim = max(fig.get_figwidth(), fig.get_figheight())
     heatmap_color_range = None
     if not all_probe_infos and len(all_probes_preds) != 0:  # sae
-        heatmap_color_range = (all_probes_preds.min(), all_probes_preds.max())
+        heatmap_color_range = (all_probes_preds[0].min(), all_probes_preds[0].max())
         norm = plt.Normalize(vmin=heatmap_color_range[0], vmax=heatmap_color_range[1])
         fig.colorbar(cm.ScalarMappable(cmap="viridis", norm=norm), ax=axs)
 
@@ -291,7 +336,7 @@ def save_video(
                     all_metrics.update(probe_metrics)
                     ax = axs[pidx]
                     reset_frame(ax)
-                    ax.text(0.1, 0.1, prefix + "\n\n" + "\n".join([f"{k}: {100*v:.1f}" for k, v in probe_metrics.items()]))
+                    ax.text(0.1, 0.1, prefix + "\n\n" + "\n".join([f"{k}: {100 * v:.1f}" for k, v in probe_metrics.items()]))
 
                 # plt.text(0.1, 0.1, "\n".join([f"{k}: {v:.2f}" for k, v in all_metrics.items()]))
             else:
@@ -376,7 +421,10 @@ def save_video(
                 plt_obs_with_target_labels(target_labels, ax)
 
         internal_step_suffix = ": Internal Step " + str(i % repeats_per_step) if i < total_internal_steps else ""
-        plt.suptitle(f"Step {obs_idx}{internal_step_suffix}" + title_prefix, y=0.99)
+        if overlapped or len(all_probes_preds) <= 1:
+            plt.title(f"Step {obs_idx}{internal_step_suffix}" + title_prefix)
+        else:
+            plt.suptitle(f"Step {obs_idx}{internal_step_suffix}" + title_prefix, y=0.99)
         return (fig,)
 
     anim = animation.FuncAnimation(
@@ -391,7 +439,7 @@ def save_video(
     full_path = os.path.join(base_dir, filename)
     os.makedirs(os.path.dirname(full_path), exist_ok=True)
     t0 = time.time()
-    anim.save(full_path, fps=2, writer="ffmpeg")
+    anim.save(full_path, fps=fps, writer="ffmpeg")
     print(f"Saved video to {full_path} in {time.time() - t0:.2f} seconds.")
     return full_path
 
@@ -493,28 +541,272 @@ def save_video_sae(
     return full_path
 
 
-def plotly_feature_vis(feature_acts, obs, feature_labels, show=False):
+def upsample(feature_acts, height, width):
+    """Upsample feature activations to match the observation size by repeating
+    elements and padding with zeros if necessary.
+
+    Args:
+        feature_acts (np.ndarray): Feature activations of shape (time, num_features, ft_height, ft_width).
+        height (int): Target height.
+        width (int): Target width.
+    Returns:
+        np.ndarray: Upsampled feature activations of shape (time, num_features, height, width).
+    """
+    ft_height, ft_width = feature_acts.shape[-2:]
+
+    if ft_height == height and ft_width == width:
+        return feature_acts
+
+    assert ft_height > 0 and ft_width > 0, "Feature dimensions must be positive"
+    assert ft_height <= height and ft_width <= width, "Target dimensions must be >= feature dimensions"
+
+    upsampled = np.zeros((*feature_acts.shape[:-2], height, width), dtype=feature_acts.dtype)
+
+    scale_h = height // ft_height
+    scale_w = width // ft_width
+
+    repeated = np.repeat(feature_acts, scale_h, axis=-2)
+    repeated = np.repeat(repeated, scale_w, axis=-1)
+
+    rep_h, rep_w = repeated.shape[-2], repeated.shape[-1]
+    pad_h_start = (height - rep_h) // 2
+    pad_w_start = (width - rep_w) // 2
+
+    upsampled[..., pad_h_start : pad_h_start + rep_h, pad_w_start : pad_w_start + rep_w] = repeated
+
+    return upsampled
+
+
+def plotly_feature_vis(
+    feature_acts,
+    obs,
+    feature_labels=None,
+    common_channel_norm=False,
+    height=None,
+    zmin=None,
+    zmax=None,
+    facet_col_spacing: float = 0.001,
+    facet_row_spacing: float = 0.002,
+    **imshow_kwargs,
+):
     """Feature activations visualized with observations along with time slider.
 
     Args:
         feature_acts (np.ndarray): Activations of top features. Shape: (time, num_features, height, width).
         obs (np.ndarray): Observations. Shape: (time, channels, height, width).
-        feature_labels (list[str]): Labels for the features. Shape: (num_features,).
+        feature_labels (list[str] | str, optional): Labels for the features. Shape: (num_features,) or title string.
+        common_channel_norm (bool, optional): Whether to normalize all channels together. Defaults to False.
     """
+    if feature_acts is None:
+        feature_acts = np.zeros((obs.shape[0], 0, obs.shape[2], obs.shape[3]))
     cmap = plt.get_cmap("viridis")
-    normed = (feature_acts - feature_acts.min()) / (feature_acts.max() - feature_acts.min())
+    axs = (0, 1, 2, 3) if common_channel_norm else (0, 2, 3)
 
+    feature_acts = upsample(feature_acts, obs.shape[2], obs.shape[3])
+
+    # Handle normalization
+    min_acts = feature_acts.min(axis=axs, keepdims=True) if zmin is None else zmin
+    max_acts = feature_acts.max(axis=axs, keepdims=True) if zmax is None else zmax
+    normed = (feature_acts - min_acts) / (max_acts - min_acts)
+
+    # Prepare observations
     repeated_obs = np.transpose(obs, (0, 2, 3, 1))[:, None, :, :, :]
     to_plot = np.concatenate([repeated_obs[: len(normed)], cmap(normed)[..., :3] * 255], axis=1)
-    labels = ["Observation"] + feature_labels
+
+    # Handle labels
+    default_labels = ["Observation"] + [f"Channel {i}" for i in range(feature_acts.shape[1])]
+    if isinstance(feature_labels, str):
+        title = feature_labels
+        labels = default_labels
+    elif feature_labels is None:
+        title = None
+        labels = default_labels
+    else:
+        title = None
+        labels = ["Observation"] + feature_labels
+
+    try:
+        max_divisor = max(i for i in range(6, 12) if len(labels) % i == 0)
+    except ValueError:
+        max_divisor = min(6, len(labels))
     fig = px.imshow(
-        to_plot[:, :],
+        to_plot,
         facet_col=1,
         animation_frame=0,
-        facet_col_wrap=8,
+        facet_col_wrap=max_divisor,
         binary_string=True,
+        zmin=to_plot.min() if zmin is None else zmin,
+        zmax=to_plot.max() if zmax is None else zmax,
+        facet_col_spacing=facet_col_spacing,
+        facet_row_spacing=facet_row_spacing,
+        title=title,
+        height=height,
     )
+
+    def set_hovertemplate(data, t_idx, ch_idx):
+        if ch_idx == 0:
+            trace.hovertemplate = "y: %{y}<br>x: %{x}<br><extra></extra>"  # type: ignore
+        else:
+            trace.customdata = feature_acts[t_idx, ch_idx - 1, :, :]  # type: ignore
+            trace.hovertemplate = "y: %{y}<br>x: %{x}<br>z: %{customdata:.2f}<br><extra></extra>"  # type: ignore
+
+    for t_idx, frame in enumerate(fig.frames):
+        for ch_idx, trace in enumerate(frame.data):  # type: ignore
+            set_hovertemplate(trace, t_idx, ch_idx)
+    assert len(fig.data) > feature_acts.shape[1], f"Expected more than {feature_acts.shape[1]} traces, but got {len(fig.data)}"  # type: ignore
+    for ch_idx in range(feature_acts.shape[1] + 1):
+        trace = fig.data[ch_idx]
+        set_hovertemplate(trace, 0, ch_idx)
+
     fig.for_each_annotation(lambda a: a.update(text=labels[int(a.text.split("=")[-1])]))
-    if show:
-        fig.show()
     return fig
+
+
+def plot_group(toy_cache, toy_obs_repeated, group_name="box", hook_type="h"):
+    layer_values = {}
+    if isinstance(toy_cache, dict):
+        for k, v in toy_cache.items():
+            if m := re.match(f"^.*([0-9]+)\\.hook_([{hook_type}])$", k):
+                layer_values[int(m.group(1))] = v
+    elif isinstance(toy_cache, list):
+        for i, (h, c) in enumerate(toy_cache):
+            layer_values[i] = h
+    else:
+        raise ValueError(f"Incorrect type: {type(toy_cache)}")
+
+    desired_groups = get_group_channels(group_name, return_dict=True)
+
+    channels = []
+    labels = []
+
+    for group in desired_groups:
+        for layer in group:
+            assert isinstance(layer, dict)
+            channels.append(layer_values[layer["layer"]][:, layer["idx"], :, :])
+            labels.append(f"L{layer['layer']}{hook_type.upper()}{layer['idx']}")
+
+    channels = np.stack(channels, 1)
+    fig = plotly_feature_vis(channels, toy_obs_repeated, feature_labels=labels, common_channel_norm=True)
+    fig.update_layout(height=800)
+    return fig
+
+
+def save_video_from_plotly(fig, filename, fps=2, demo=False, frame_width=800, frame_height=400):
+    """Save a video from a plotly figure.
+
+    Args:
+        fig (plotly.graph_objects.Figure): The figure to save.
+        filename (str): The name of the video file to save.
+        fps (int): The frames per second of the video.
+        demo (bool): Whether to print the frames saved.
+        frame_width (int): The width of the frames.
+        frame_height (int): The height of the frames.
+    """
+    # delete the frames directory if it exists
+    if os.path.exists("/tmp/frames"):
+        shutil.rmtree("/tmp/frames")
+    frames_dir = "/tmp/frames"
+
+    os.makedirs(frames_dir, exist_ok=True)
+    if fig.frames:
+        frame_name_prefix = "frame"
+        if hasattr(fig.frames[0], "name") and fig.frames[0].name is not None:
+            frame_names = [f"Step {int(fr.name) // 3} Tick {int(fr.name) % 3}" for fr in fig.frames]
+        fig.add_annotation(
+            text=frame_names[0],
+            x=0.5,
+            y=0.97,
+            xref="paper",
+            yref="paper",
+            showarrow=False,
+            font=dict(size=16),
+            name="frame_name_annotation",
+        )
+        for i, frame_name in tqdm(enumerate(frame_names), total=len(frame_names)):
+            current_frame_data = fig.frames[i].data
+            with fig.batch_update():  # Efficiently update multiple properties
+                if current_frame_data:
+                    for trace_idx, new_trace_data in enumerate(current_frame_data):
+                        if trace_idx < len(fig.data):
+                            fig.data[trace_idx].update(new_trace_data)
+                        else:  # Should not happen if frames are derived from base data
+                            fig.add_trace(new_trace_data)
+                if fig.layout.sliders:
+                    fig.layout.sliders[0].active = i
+
+            # update the frame name
+            selected_annotation = fig.select_annotations(selector=dict(name="frame_name_annotation"))
+            for ann in selected_annotation:
+                ann.text = frame_name
+            # --- Store and modify layout elements for clean frame saving ---
+            sliders_original_visibility = []
+            if fig.layout.sliders:
+                for s_obj in fig.layout.sliders:
+                    sliders_original_visibility.append(s_obj.visible if hasattr(s_obj, "visible") else True)
+                    s_obj.visible = False
+
+            original_updatemenu_visibilities = []
+            if hasattr(fig.layout, "updatemenus") and fig.layout.updatemenus:
+                for um_obj in fig.layout.updatemenus:
+                    original_updatemenu_visibilities.append(um_obj.visible if hasattr(um_obj, "visible") else True)
+                    um_obj.visible = False
+
+            axes_original_settings = {}
+            # Iterate over a copy of keys from layout's Plotly JSON representation to safely access axis objects
+            if fig.layout:
+                for key in list(fig.layout.to_plotly_json().keys()):
+                    if key.startswith("xaxis") or key.startswith("yaxis"):
+                        axis_obj = fig.layout[key]
+                        axes_original_settings[key] = {
+                            "showticklabels": axis_obj.showticklabels if hasattr(axis_obj, "showticklabels") else None,
+                            "ticks": axis_obj.ticks if hasattr(axis_obj, "ticks") else None,
+                        }
+                        axis_obj.showticklabels = False
+                        axis_obj.ticks = ""
+            # --- End store and modify ---
+
+            # Save the current state as an image
+            frame_filename = os.path.join(frames_dir, f"{frame_name_prefix}_{i:04d}.png")
+            fig.write_image(
+                frame_filename, width=frame_width, height=frame_height, scale=1
+            )  # Adjust scale if needed for resolution
+            # --- Restore layout elements ---
+            if fig.layout.sliders:
+                for idx, s_obj in enumerate(fig.layout.sliders):
+                    if idx < len(sliders_original_visibility):
+                        s_obj.visible = sliders_original_visibility[idx]
+
+            if hasattr(fig.layout, "updatemenus") and fig.layout.updatemenus:
+                for idx, um_obj in enumerate(fig.layout.updatemenus):
+                    if idx < len(original_updatemenu_visibilities):
+                        um_obj.visible = original_updatemenu_visibilities[idx]
+
+            if fig.layout:
+                for key, original_settings in axes_original_settings.items():
+                    if fig.layout[key] is not None:  # Check if axis object still exists
+                        if original_settings["showticklabels"] is not None:
+                            fig.layout[key].showticklabels = original_settings["showticklabels"]
+                        if original_settings["ticks"] is not None:
+                            fig.layout[key].ticks = original_settings["ticks"]
+            # --- End restore ---
+            if demo and i > 2:
+                print(f"Saved {frame_filename}")
+                return
+        images = []
+        # Ensure frames are sorted correctly if names are not zero-padded initially
+        # but the f"{frame_name_prefix}_{i:04d}.png" format ensures this.
+        saved_frame_files = sorted(
+            [
+                os.path.join(frames_dir, f)
+                for f in os.listdir(frames_dir)
+                if f.startswith(frame_name_prefix) and f.endswith(".png")
+            ]
+        )
+
+        for image_file in saved_frame_files:
+            images.append(imageio.imread(image_file))
+
+        imageio.mimwrite(filename, images, fps=fps, quality=8)  # quality (0-10, 10 is highest for mp4)
+        print(f"\nVideo saved as {filename}")
+    else:
+        raise ValueError("No frames found in the figure")
