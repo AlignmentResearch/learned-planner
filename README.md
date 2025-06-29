@@ -1,4 +1,4 @@
-# Learned Planner & Interpreting Learned Search
+# Interpreting Learned Search & Planning
 
 ![Learned Planner - Level18](https://github.com/user-attachments/assets/764939ec-1cb7-482d-a42d-72609aa76b23)
 
